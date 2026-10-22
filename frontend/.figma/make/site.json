@@ -1,0 +1,10 @@
+{
+  "description": "Converts markdown prompts into interactive web applications, enabling users to quickly create functional apps from text-based instructions.",
+  "robots": {
+    "index": false
+  },
+  "accessibility": {
+    "addBypassLinks": false,
+    "ignoreReducedMotion": false
+  }
+}
