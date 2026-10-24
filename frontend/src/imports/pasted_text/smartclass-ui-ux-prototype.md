@@ -780,12 +780,12 @@ Large chronological schedule:
 09:00
 Data Structures
 Room A-204
-Prof. Sharma
+Faculty Member
 
 11:00
 Database Systems
 Room B-102
-Prof. Mehta
+Faculty Member
 
 Use lecture-type badges:
 Regular

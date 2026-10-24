@@ -1,0 +1,250 @@
+[
+  {
+    "id": "FAC-NG",
+    "name": "Dr. Nupur Giri",
+    "initials": "NG",
+    "email": "fac-ng@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-GB",
+    "name": "Dr. Gresha Bhatia",
+    "initials": "GB",
+    "email": "fac-gb@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-SKH",
+    "name": "Dr. Sujata Khedekar",
+    "initials": "SKH",
+    "email": "fac-skh@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-SS",
+    "name": "Dr. Sharmila S",
+    "initials": "SS",
+    "email": "fac-ss@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-MD",
+    "name": "Dr. M.D.Patil",
+    "initials": "MD",
+    "email": "fac-md@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PK",
+    "name": "Dr. Prashant Kanade",
+    "initials": "PK",
+    "email": "fac-pk@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-RT",
+    "name": "Dr. Rohini Temkar",
+    "initials": "RT",
+    "email": "fac-rt@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-GES",
+    "name": "Geocey Shejy",
+    "initials": "GES",
+    "email": "fac-ges@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-DM",
+    "name": "Dr. Dashrath Mane",
+    "initials": "DM",
+    "email": "fac-dm@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-VZ",
+    "name": "Vidya Zope",
+    "initials": "VZ",
+    "email": "fac-vz@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-ID",
+    "name": "Indu Dokare",
+    "initials": "ID",
+    "email": "fac-id@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PRL",
+    "name": "Priya R. L.",
+    "initials": "PRL",
+    "email": "fac-prl@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-LF",
+    "name": "Lifna C S",
+    "initials": "LF",
+    "email": "fac-lf@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-AT",
+    "name": "Abha Tewari",
+    "initials": "AT",
+    "email": "fac-at@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PN",
+    "name": "Mannat D",
+    "initials": "PN",
+    "email": "fac-pn@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PAG",
+    "name": "Pallavi G",
+    "initials": "PAG",
+    "email": "fac-pag@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-NUS",
+    "name": "Nusrat A",
+    "initials": "NUS",
+    "email": "fac-nus@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-SSU",
+    "name": "Sunita Suralkar",
+    "initials": "SSU",
+    "email": "fac-ssu@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-RH",
+    "name": "Rupali Hande",
+    "initials": "RH",
+    "email": "fac-rh@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-SM",
+    "name": "Sanjay M",
+    "initials": "SM",
+    "email": "fac-sm@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-SKA",
+    "name": "Sujata Khandaskar",
+    "initials": "SKA",
+    "email": "fac-ska@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PLS",
+    "name": "Pallavi Saindane",
+    "initials": "PLS",
+    "email": "fac-pls@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-YD",
+    "name": "Yugchhaya Dhote",
+    "initials": "YD",
+    "email": "fac-yd@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-RJO",
+    "name": "Richard Joseph",
+    "initials": "RJO",
+    "email": "fac-rjo@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PRS",
+    "name": "Prerna S",
+    "initials": "PRS",
+    "email": "fac-prs@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-MM",
+    "name": "Mathur Manisha",
+    "initials": "MM",
+    "email": "fac-mm@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PRN",
+    "name": "Priyanka Shah",
+    "initials": "PRN",
+    "email": "fac-prn@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PJO",
+    "name": "Preeti Joshi",
+    "initials": "PJO",
+    "email": "fac-pjo@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-PRR",
+    "name": "Pradnya Raut",
+    "initials": "PRR",
+    "email": "fac-prr@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-HPL",
+    "name": "Himali Patil",
+    "initials": "HPL",
+    "email": "fac-hpl@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  },
+  {
+    "id": "FAC-VI",
+    "name": "Vikrant Ingale",
+    "initials": "VI",
+    "email": "fac-vi@smartclass.local",
+    "department": "Computer Engineering",
+    "isHOD": false
+  }
+]

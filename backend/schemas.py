@@ -27,6 +27,9 @@ class UserResponse(BaseModel):
     className: Optional[str] = Field(default=None, alias="class")
     avatar: Optional[str] = None
     firstLogin: Optional[bool] = False
+    initials: Optional[str] = None
+    rollNo: Optional[str] = None
+    mobile: Optional[str] = None
 
     class Config:
         populate_by_name = True
@@ -35,6 +38,40 @@ class UserResponse(BaseModel):
 class TokenResponse(BaseModel):
     token: str
     user: UserResponse
+
+class FacultyResponse(BaseModel):
+    id: str
+    name: str
+    initials: str
+    email: str
+    department: str
+    isHOD: bool = False
+
+class TimetableItemResponse(BaseModel):
+    id: int
+    time: str
+    startTime: str
+    endTime: str
+    course: str
+    code: str
+    faculty: Optional[str] = None
+    facultyInitials: Optional[str] = None
+    room: Optional[str] = None
+    type: str = "Regular"
+    classId: str = Field(alias="class")
+    batch: Optional[str] = None
+    sessionKind: str = "Theory"
+    groupId: Optional[str] = None
+    isAmbiguous: bool = False
+
+    class Config:
+        populate_by_name = True
+
+class UsersListResponse(BaseModel):
+    total: int
+    page: int
+    pageSize: int
+    users: List[UserResponse]
 
 # Attendance schemas
 class MarkAttendanceItem(BaseModel):

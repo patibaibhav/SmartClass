@@ -1,0 +1,65 @@
+[
+  {
+    "id": "CCL",
+    "code": "CCL",
+    "name": "Cloud Computing Lab",
+    "department": "Computer Engineering",
+    "credits": null
+  },
+  {
+    "id": "CSS",
+    "code": "CSS",
+    "name": "CSS",
+    "department": "Computer Engineering",
+    "credits": null
+  },
+  {
+    "id": "DE",
+    "code": "DE",
+    "name": "Data Engineering",
+    "department": "Computer Engineering",
+    "credits": null
+  },
+  {
+    "id": "DWM",
+    "code": "DWM",
+    "name": "Data Warehousing & Mining",
+    "department": "Computer Engineering",
+    "credits": null
+  },
+  {
+    "id": "ML",
+    "code": "ML",
+    "name": "Machine Learning",
+    "department": "Computer Engineering",
+    "credits": null
+  },
+  {
+    "id": "PROJECT",
+    "code": "PROJECT",
+    "name": "Project",
+    "department": "Computer Engineering",
+    "credits": null
+  },
+  {
+    "id": "SD",
+    "code": "SD",
+    "name": "SD",
+    "department": "Computer Engineering",
+    "credits": null
+  },
+  {
+    "id": "SEA",
+    "code": "SEA",
+    "name": "Software Engineering & Architecture",
+    "department": "Computer Engineering",
+    "credits": null
+  },
+  {
+    "id": "TCS",
+    "code": "TCS",
+    "name": "Theoretical Computer Science",
+    "department": "Computer Engineering",
+    "credits": null
+  }
+]

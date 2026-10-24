@@ -27,3 +27,11 @@ ACCOUNT_LOCKOUT_MINUTES = 15
 DEFAULT_LOW_ATTENDANCE_THRESHOLD = 75.0  # percentage (TBD-004)
 UPLOAD_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(UPLOAD_DIR, exist_ok=True)
+
+# App environment & seed configuration
+APP_ENV = os.getenv("APP_ENV", "development")
+DEPARTMENT_NAME = os.getenv("DEPARTMENT_NAME", "Computer Engineering")
+HOD_INITIALS = [x.strip() for x in os.getenv("HOD_INITIALS", "").split(",") if x.strip()]
+SEED_ADMIN_PASSWORD = os.getenv("SEED_ADMIN_PASSWORD", "demo1234" if APP_ENV != "production" else "")
+SEED_DEV_PASSWORD = os.getenv("SEED_DEV_PASSWORD", None)
+DATA_XLSX_PATH = os.getenv("DATA_XLSX_PATH", os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data.xlsx"))

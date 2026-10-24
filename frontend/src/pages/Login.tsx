@@ -1,20 +1,21 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { BookOpen, Eye, EyeOff, AlertCircle, CheckCircle } from 'lucide-react';
 import { Button, Input } from '../components/ui';
 import type { Role, User } from '../data/mock';
-import { USERS } from '../data/mock';
 import { api } from '../services/api';
 
 interface LoginProps {
   onLogin: (user: User) => void;
 }
 
-const DEMO_USERS = [
-  { label: 'Student', id: 'STU001', pass: 'demo1234' },
-  { label: 'Faculty', id: 'FAC001', pass: 'demo1234' },
-  { label: 'Faculty (HOD)', id: 'FAC002', pass: 'demo1234' },
-  { label: 'Admin', id: 'ADM001', pass: 'demo1234' },
-  { label: 'Council Head', id: 'CON001', pass: 'demo1234' },
+const DEFAULT_DEMO_USERS = [
+  { label: 'Student (D12A)', id: 'D12A-01' },
+  { label: 'Student (D12B)', id: 'D12B-01' },
+  { label: 'Student (D12C)', id: 'D12C-01' },
+  { label: 'Faculty (HOD)', id: 'FAC-MP' },
+  { label: 'Faculty', id: 'FAC-AB' },
+  { label: 'Admin', id: 'ADM001' },
+  { label: 'Council Head', id: 'CON001' },
 ];
 
 export default function Login({ onLogin }: LoginProps) {
@@ -31,8 +32,17 @@ export default function Login({ onLogin }: LoginProps) {
   const [showConfirm, setShowConfirm] = useState(false);
   const [passError, setPassError] = useState('');
   const [success, setSuccess] = useState(false);
+  const [demoAccounts, setDemoAccounts] = useState(DEFAULT_DEMO_USERS);
 
   const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    api.getDemoAccounts().then(data => {
+      if (Array.isArray(data) && data.length > 0) {
+        setDemoAccounts(data);
+      }
+    }).catch(() => {});
+  }, []);
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
@@ -47,18 +57,7 @@ export default function Login({ onLogin }: LoginProps) {
         onLogin(resp.user);
       }
     } catch (err: any) {
-      // If network error, check mock data
-      const user = USERS.find(u => u.id === userId);
-      if (user && (password === 'demo1234' || password === 'Temp@123')) {
-        if (password === 'Temp@123') {
-          setPendingUser(user);
-          setPhase('first-login');
-        } else {
-          onLogin(user);
-        }
-      } else {
-        setError(err.message || 'Invalid User ID or password. Please try again.');
-      }
+      setError(err.message || 'Invalid User ID or password. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -80,9 +79,7 @@ export default function Login({ onLogin }: LoginProps) {
         setTimeout(() => onLogin(resp.user || pendingUser), 1000);
       }
     } catch (err: any) {
-      // Fallback
-      setSuccess(true);
-      setTimeout(() => pendingUser && onLogin(pendingUser), 1000);
+      setPassError(err.message || 'Failed to update password');
     } finally {
       setLoading(false);
     }
@@ -90,17 +87,20 @@ export default function Login({ onLogin }: LoginProps) {
 
   async function quickLogin(id: string) {
     setError('');
+    setLoading(true);
     try {
       const resp = await api.login(id, 'demo1234');
-      if (resp.user) {
+      if (resp.phase === 'first-login') {
+        setPendingUser(resp.user);
+        setPhase('first-login');
+      } else if (resp.user) {
         onLogin(resp.user);
-        return;
       }
-    } catch {
-      // Fallback to mock
+    } catch (err: any) {
+      setError(err.message || 'Quick login failed. Ensure backend server is running.');
+    } finally {
+      setLoading(false);
     }
-    const user = USERS.find(u => u.id === id);
-    if (user) onLogin(user);
   }
 
   if (phase === 'first-login') {
@@ -201,7 +201,7 @@ export default function Login({ onLogin }: LoginProps) {
           <form onSubmit={handleLogin} className="px-8 py-7 space-y-4">
             <h2 className="text-base font-bold text-[#1a2e1e]">Sign in to your account</h2>
 
-            <Input label="User ID" placeholder="Enter your User ID (e.g. STU001)" value={userId} onChange={setUserId} required />
+            <Input label="User ID" placeholder="Enter your User ID (e.g. D12A-01, ADM001)" value={userId} onChange={setUserId} required />
 
             <div>
               <label className="text-xs font-semibold text-[#4a3a2a] uppercase tracking-wider block mb-1">Password <span className="text-[#D98282]">*</span></label>
@@ -229,8 +229,8 @@ export default function Login({ onLogin }: LoginProps) {
               </div>
             )}
 
-            <Button type="submit" variant="primary" className="w-full justify-center py-3">
-              Sign In
+            <Button type="submit" variant="primary" className="w-full justify-center py-3" disabled={loading}>
+              {loading ? 'Signing In...' : 'Sign In'}
             </Button>
 
             <p className="text-xs text-[#9a8a75] text-center">Contact your administrator if you have forgotten your credentials.</p>
@@ -241,11 +241,12 @@ export default function Login({ onLogin }: LoginProps) {
             <div className="border-t border-[#E8E2D0] pt-5">
               <p className="text-xs text-[#7a6a55] font-medium mb-3 text-center">Quick Demo Access</p>
               <div className="flex flex-wrap gap-2 justify-center">
-                {DEMO_USERS.map(u => (
+                {demoAccounts.map(u => (
                   <button
                     key={u.id}
                     onClick={() => quickLogin(u.id)}
-                    className="px-3 py-1.5 bg-[#E8E2D0] hover:bg-[#2F4F3A] hover:text-[#F4F1E6] text-[#2F4F3A] text-xs font-medium rounded-lg transition-colors"
+                    disabled={loading}
+                    className="px-3 py-1.5 bg-[#E8E2D0] hover:bg-[#2F4F3A] hover:text-[#F4F1E6] text-[#2F4F3A] text-xs font-medium rounded-lg transition-colors disabled:opacity-50"
                   >
                     {u.label}
                   </button>

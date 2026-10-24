@@ -21,11 +21,22 @@ import ProfilePage from './pages/ProfilePage';
 import NotificationsPage from './pages/NotificationsPage';
 import MyClassPage from './pages/MyClassPage';
 import type { User } from './data/mock';
-import { NOTIFICATIONS } from './data/mock';
+import { api } from './services/api';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
+  const [unreadCount, setUnreadCount] = useState<number>(0);
+
+  React.useEffect(() => {
+    if (user) {
+      api.getNotifications().then(data => {
+        if (Array.isArray(data)) {
+          setUnreadCount(data.filter((n: any) => !n.read).length);
+        }
+      }).catch(() => setUnreadCount(0));
+    }
+  }, [user, currentPage]);
 
   function handleLogin(u: User) {
     setUser(u);
@@ -45,7 +56,7 @@ export default function App() {
     return <Login onLogin={handleLogin} />;
   }
 
-  const unread = NOTIFICATIONS.filter(n => !n.read).length;
+  const unread = unreadCount;
 
   function renderPage() {
     // Role-aware page rendering

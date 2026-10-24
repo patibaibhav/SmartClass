@@ -1,43 +1,115 @@
-import React, { useState } from 'react';
-import { ChevronLeft, ChevronRight, Plus, Clock } from 'lucide-react';
-import { Card, Badge, Button, Select, SectionHeader, Tabs } from '../components/ui';
-import { TIMETABLE } from '../data/mock';
+import React, { useState, useEffect } from 'react';
+import { ChevronLeft, ChevronRight, Plus, Clock, AlertTriangle, Users } from 'lucide-react';
+import { Card, Badge, Button, SectionHeader, Tabs } from '../components/ui';
+import { api } from '../services/api';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] as const;
-const TIMES = ['09:00', '10:00', '11:00', '11:15', '12:15', '14:00', '15:00', '16:00'];
-
-type LectureType = 'Regular' | 'Substitute' | 'Extra' | 'Cancelled';
-
-const TYPE_COLORS: Record<LectureType, string> = {
-  Regular: '#eaf3f8',
-  Substitute: '#fdf6e0',
-  Extra: '#f0eaf8',
-  Cancelled: '#f5f0f0',
-};
-const TYPE_BORDER: Record<LectureType, string> = {
-  Regular: '#7DB7C9',
-  Substitute: '#E8D36A',
-  Extra: '#9a7acc',
-  Cancelled: '#D98282',
-};
+const TIME_SLOTS = [
+  '08:30 - 09:30',
+  '09:30 - 10:30',
+  '10:30 - 11:30',
+  '11:30 - 12:30',
+  '12:30 - 13:30',
+  '13:30 - 14:30',
+  '14:30 - 15:30',
+];
 
 interface Props {
   role?: string;
   onAddLecture?: () => void;
 }
 
+interface TimetableItem {
+  id: number;
+  class_id?: string;
+  course: string;
+  course_name?: string;
+  faculty: string;
+  faculty_initials?: string;
+  room: string;
+  time: string;
+  start_time: string;
+  end_time: string;
+  type: string;
+  batch?: string | null;
+  session_kind?: string;
+  group_id?: string | null;
+  is_ambiguous?: boolean;
+  source_ref?: string | null;
+}
+
 export default function TimetablePage({ role, onAddLecture }: Props) {
   const [view, setView] = useState('Full Timetable');
-  const [selectedDay, setSelectedDay] = useState('Wednesday');
-  const [weekOffset, setWeekOffset] = useState(0);
+  const [selectedDay, setSelectedDay] = useState<string>('Monday');
+  const [timetableData, setTimetableData] = useState<Record<string, TimetableItem[]>>({});
+  const [selectedClass, setSelectedClass] = useState<string>('D12A');
+  const [availableClasses, setAvailableClasses] = useState<string[]>(['D12A', 'D12B', 'D12C']);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  const todayLabel = 'Wednesday, Aug 14, 2024';
-  const weekLabel = 'Aug 12 – Aug 16, 2024';
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
+
+    // If student, don't pass class_id (backend scopes to student's class)
+    // If faculty/admin, pass selectedClass
+    const classParam = role === 'student' ? undefined : selectedClass;
+
+    api.getTimetable(classParam)
+      .then(res => {
+        if (!isMounted) return;
+        if (res && typeof res === 'object') {
+          setTimetableData(res);
+        } else {
+          setTimetableData({});
+        }
+      })
+      .catch(err => {
+        if (isMounted) setError(err.message || 'Failed to load timetable');
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+
+    return () => { isMounted = false; };
+  }, [role, selectedClass]);
+
+  // Normalize time strings for matching
+  function getLecturesForSlot(day: string, slot: string) {
+    const list = timetableData[day] || [];
+    const slotStart = slot.split(' - ')[0].trim();
+    return list.filter(l => {
+      const lStart = (l.start_time || l.time.split(' - ')[0] || '').trim();
+      return lStart === slotStart;
+    });
+  }
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5">
       <div className="flex items-start justify-between gap-4 flex-wrap">
-        <SectionHeader title="Timetable" sub="View your complete weekly schedule" />
+        <div>
+          <SectionHeader title="Academic Timetable" sub="Weekly scheduled lectures and lab sessions" />
+          {role !== 'student' && (
+            <div className="flex items-center gap-2 mt-3">
+              <span className="text-xs font-semibold text-[#7a6a55]">Class:</span>
+              {availableClasses.map(c => (
+                <button
+                  key={c}
+                  onClick={() => setSelectedClass(c)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold transition-colors ${
+                    selectedClass === c
+                      ? 'bg-[#2F4F3A] text-[#F4F1E6]'
+                      : 'bg-[#E8E2D0] text-[#5a4a35] hover:bg-[#ddd7c0]'
+                  }`}
+                >
+                  {c}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
         {(role === 'faculty' || role === 'admin') && (
           <div className="flex gap-2">
             <Button variant="secondary" size="sm" onClick={onAddLecture}>
@@ -53,66 +125,101 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
       {/* Controls */}
       <div className="flex flex-wrap items-center gap-3">
         <Tabs tabs={['Full Timetable', 'Day View']} active={view} onChange={setView} />
-
-        <div className="flex items-center gap-2 ml-auto">
-          <button onClick={() => setWeekOffset(w => w - 1)} className="p-2 rounded-lg hover:bg-[#E8E2D0] transition-colors">
-            <ChevronLeft size={16} className="text-[#5a4a35]" />
-          </button>
-          <span className="text-sm font-medium text-[#2F4F3A] px-2">{weekLabel}</span>
-          <button onClick={() => setWeekOffset(w => w + 1)} className="p-2 rounded-lg hover:bg-[#E8E2D0] transition-colors">
-            <ChevronRight size={16} className="text-[#5a4a35]" />
-          </button>
-        </div>
       </div>
 
       {/* Legend */}
-      <div className="flex gap-4 flex-wrap">
-        {Object.entries(TYPE_BORDER).map(([type, color]) => (
-          <div key={type} className="flex items-center gap-1.5">
-            <div className="w-3 h-3 rounded-sm" style={{ background: color }} />
-            <span className="text-xs text-[#7a6a55]">{type}</span>
-          </div>
-        ))}
+      <div className="flex gap-4 flex-wrap text-xs text-[#7a6a55]">
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-3 rounded-sm bg-[#7DB7C9]" />
+          <span>Theory</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-3 rounded-sm bg-[#E8D36A]" />
+          <span>Practical / Lab</span>
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-3 h-3 rounded-sm bg-[#D98282]" />
+          <span>Ambiguous source</span>
+        </div>
       </div>
 
-      {view === 'Full Timetable' ? (
+      {loading ? (
+        <Card className="p-12 text-center text-[#7a6a55]">
+          Loading timetable entries...
+        </Card>
+      ) : error ? (
+        <Card className="p-8 text-center text-[#b04040]">
+          {error}
+        </Card>
+      ) : view === 'Full Timetable' ? (
         /* Full grid */
         <div className="overflow-x-auto rounded-2xl border border-[#E8E2D0]">
-          <table className="w-full min-w-[800px]" style={{ background: '#F5EBD7' }}>
+          <table className="w-full min-w-[900px]" style={{ background: '#F5EBD7' }}>
             <thead>
               <tr style={{ background: '#243B2D' }}>
-                <th className="px-4 py-3 text-left text-xs font-semibold text-[#9abaaa] uppercase tracking-wider w-24">Time</th>
+                <th className="px-4 py-3 text-left text-xs font-semibold text-[#9abaaa] uppercase tracking-wider w-28">Time</th>
                 {DAYS.map(d => (
-                  <th key={d} className={`px-3 py-3 text-left text-xs font-semibold uppercase tracking-wider ${d === 'Wednesday' ? 'text-[#E8D36A]' : 'text-[#9abaaa]'}`}>
+                  <th key={d} className="px-3 py-3 text-left text-xs font-semibold text-[#9abaaa] uppercase tracking-wider">
                     {d}
                   </th>
                 ))}
               </tr>
             </thead>
             <tbody>
-              {TIMES.map(time => {
-                const rowCells = DAYS.map(day => {
-                  const lectures = (TIMETABLE[day as keyof typeof TIMETABLE] || []).filter(l => l.time.startsWith(time));
-                  return { day, lectures };
-                });
-                if (rowCells.every(c => c.lectures.length === 0)) return null;
+              {TIME_SLOTS.map(slot => {
                 return (
-                  <tr key={time} className="border-b border-[#E8E2D0] last:border-b-0">
-                    <td className="px-4 py-3 text-xs font-semibold text-[#7a6a55] align-top">{time}</td>
-                    {rowCells.map(({ day, lectures }) => (
-                      <td key={day} className="px-2 py-2 align-top">
-                        {lectures.map((l, i) => (
-                          <div key={i} className="rounded-xl p-2.5 border-l-4 mb-1 text-xs" style={{
-                            background: TYPE_COLORS[l.type as LectureType] || TYPE_COLORS.Regular,
-                            borderLeftColor: TYPE_BORDER[l.type as LectureType] || TYPE_BORDER.Regular,
-                          }}>
-                            <p className="font-semibold text-[#1a2e1e] leading-snug">{l.course}</p>
-                            <p className="text-[#7a6a55] mt-0.5">{l.room}</p>
-                            <p className="text-[#9a8a75]">{l.faculty}</p>
-                          </div>
-                        ))}
-                      </td>
-                    ))}
+                  <tr key={slot} className="border-b border-[#E8E2D0] last:border-b-0">
+                    <td className="px-3 py-3 text-xs font-bold text-[#7a6a55] align-top bg-[#ede4ce] whitespace-nowrap">
+                      {slot}
+                    </td>
+                    {DAYS.map(day => {
+                      const lectures = getLecturesForSlot(day, slot);
+                      return (
+                        <td key={day} className="px-2 py-2 align-top border-l border-[#E8E2D0]">
+                          {lectures.length === 0 ? (
+                            <span className="text-[11px] text-[#b0a090] italic">—</span>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {lectures.map((l, i) => {
+                                const isPractical = l.session_kind === 'practical' || (l.batch != null && l.batch !== '');
+                                const borderColor = l.is_ambiguous ? '#D98282' : isPractical ? '#E8D36A' : '#7DB7C9';
+                                const bgColor = l.is_ambiguous ? '#fdf2f2' : isPractical ? '#fefce8' : '#f0f9ff';
+
+                                return (
+                                  <div
+                                    key={i}
+                                    className="rounded-xl p-2 border-l-4 text-xs shadow-xs"
+                                    style={{
+                                      background: bgColor,
+                                      borderLeftColor: borderColor,
+                                    }}
+                                  >
+                                    <div className="flex items-center justify-between gap-1">
+                                      <p className="font-bold text-[#1a2e1e] leading-snug">{l.course}</p>
+                                      {l.batch && (
+                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-[#E8D36A] text-[#243B2D]">
+                                          {l.batch}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <p className="text-[11px] text-[#7a6a55] mt-0.5 font-medium">Room {l.room}</p>
+                                    <p className="text-[10px] text-[#9a8a75] truncate">
+                                      {l.faculty_initials ? `${l.faculty} (${l.faculty_initials})` : l.faculty}
+                                    </p>
+                                    {l.is_ambiguous && (
+                                      <div className="flex items-center gap-1 mt-1 text-[10px] text-[#b04040]">
+                                        <AlertTriangle size={10} />
+                                        <span>Ambiguous</span>
+                                      </div>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </td>
+                      );
+                    })}
                   </tr>
                 );
               })}
@@ -122,13 +229,14 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
       ) : (
         /* Day view */
         <div className="space-y-4">
-          {/* Day selector */}
           <div className="flex gap-2 overflow-x-auto pb-1">
             {DAYS.map(d => (
               <button
                 key={d}
                 onClick={() => setSelectedDay(d)}
-                className={`px-4 py-2 rounded-xl text-sm font-medium shrink-0 transition-colors ${selectedDay === d ? 'bg-[#2F4F3A] text-[#F4F1E6]' : 'bg-[#E8E2D0] text-[#5a4a35] hover:bg-[#ddd7c0]'}`}
+                className={`px-4 py-2 rounded-xl text-sm font-medium shrink-0 transition-colors ${
+                  selectedDay === d ? 'bg-[#2F4F3A] text-[#F4F1E6]' : 'bg-[#E8E2D0] text-[#5a4a35] hover:bg-[#ddd7c0]'
+                }`}
               >
                 {d}
               </button>
@@ -136,35 +244,54 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
           </div>
 
           <div className="space-y-3">
-            {(TIMETABLE[selectedDay as keyof typeof TIMETABLE] || []).map((lecture, i) => (
-              <Card key={i} className="p-5 flex gap-5 items-start border-l-4" style={{ borderLeftColor: TYPE_BORDER[lecture.type as LectureType] } as React.CSSProperties}>
-                <div className="shrink-0 text-center w-20">
-                  <p className="text-base font-bold text-[#2F4F3A]">{lecture.time.split('–')[0]}</p>
-                  <p className="text-xs text-[#9a8a75]">–{lecture.time.split('–')[1]}</p>
-                </div>
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 flex-wrap mb-1">
-                    <h3 className="text-sm font-bold text-[#1a2e1e]">{lecture.course}</h3>
-                    <span className="text-xs text-[#7a6a55]">({lecture.code})</span>
-                    <Badge variant={lecture.type.toLowerCase() as any}>{lecture.type}</Badge>
+            {(timetableData[selectedDay] || []).map((lecture, i) => {
+              const isPractical = lecture.session_kind === 'practical' || (lecture.batch != null && lecture.batch !== '');
+              const borderColor = lecture.is_ambiguous ? '#D98282' : isPractical ? '#E8D36A' : '#7DB7C9';
+
+              return (
+                <Card
+                  key={i}
+                  className="p-5 flex gap-5 items-start border-l-4"
+                  style={{ borderLeftColor: borderColor }}
+                >
+                  <div className="shrink-0 text-center w-28">
+                    <p className="text-sm font-bold text-[#2F4F3A]">{lecture.time || `${lecture.start_time} - ${lecture.end_time}`}</p>
+                    <span className="text-[10px] uppercase font-semibold text-[#7a6a55]">
+                      {lecture.session_kind || 'Theory'}
+                    </span>
                   </div>
-                  <div className="flex gap-4 text-xs text-[#7a6a55]">
-                    <span className="flex items-center gap-1"><Clock size={11} />{lecture.time}</span>
-                    <span>Room {lecture.room}</span>
-                    <span>{lecture.faculty}</span>
+
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 flex-wrap mb-1">
+                      <h3 className="text-base font-bold text-[#1a2e1e]">{lecture.course_name || lecture.course}</h3>
+                      <Badge variant="default">{lecture.course}</Badge>
+                      {lecture.batch && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-bold bg-[#E8D36A] text-[#243B2D]">
+                          Batch {lecture.batch}
+                        </span>
+                      )}
+                      {lecture.is_ambiguous && (
+                        <span className="px-2 py-0.5 rounded-full text-xs font-medium bg-[#fde8e8] text-[#b04040] flex items-center gap-1">
+                          <AlertTriangle size={12} /> Ambiguous in sheet
+                        </span>
+                      )}
+                    </div>
+
+                    <div className="flex gap-4 text-xs text-[#7a6a55] mt-1.5 flex-wrap">
+                      <span className="flex items-center gap-1"><Clock size={11} />{lecture.time}</span>
+                      <span>Room: <strong className="text-[#1a2e1e]">{lecture.room}</strong></span>
+                      <span>Faculty: <strong className="text-[#1a2e1e]">{lecture.faculty} {lecture.faculty_initials ? `(${lecture.faculty_initials})` : ''}</strong></span>
+                    </div>
+
+                    {lecture.source_ref && (
+                      <p className="text-[10px] text-[#9a8a75] mt-2">Source: {lecture.source_ref}</p>
+                    )}
                   </div>
-                  {lecture.type === 'Substitute' && (
-                    <p className="text-xs text-[#7a6000] mt-2 bg-[#fdf6e0] rounded-lg px-3 py-1.5 inline-block">
-                      Substitute lecture — attendance recorded against conducting faculty
-                    </p>
-                  )}
-                  {lecture.type === 'Cancelled' && (
-                    <p className="text-xs text-[#9a8a75] mt-2">This lecture is cancelled and does not count toward attendance.</p>
-                  )}
-                </div>
-              </Card>
-            ))}
-            {!(TIMETABLE[selectedDay as keyof typeof TIMETABLE]?.length) && (
+                </Card>
+              );
+            })}
+
+            {(!timetableData[selectedDay] || timetableData[selectedDay].length === 0) && (
               <Card className="p-10 text-center">
                 <p className="text-sm text-[#9a8a75]">No lectures scheduled for {selectedDay}.</p>
               </Card>

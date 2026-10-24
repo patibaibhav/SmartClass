@@ -80,11 +80,18 @@ def require_current_user(
     return user
 
 def require_role(*allowed_roles):
+    roles = []
+    for r in allowed_roles:
+        if isinstance(r, (list, tuple, set)):
+            roles.extend(r)
+        else:
+            roles.append(r)
+
     def role_checker(user: models.User = Depends(require_current_user)) -> models.User:
         user_roles = [user.role]
         if user.is_hod:
             user_roles.append("hod")
-        if not any(r in allowed_roles for r in user_roles):
+        if not any(r in roles for r in user_roles):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Access forbidden: insufficient role permissions"

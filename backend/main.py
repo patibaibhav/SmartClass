@@ -18,7 +18,7 @@ from auth import (
     check_account_lockout, record_failed_attempt, record_successful_login,
     generate_salt
 )
-from config import DEFAULT_LOW_ATTENDANCE_THRESHOLD
+from config import APP_ENV, DEFAULT_LOW_ATTENDANCE_THRESHOLD
 
 # Initialize tables
 Base.metadata.create_all(bind=engine)
@@ -193,32 +193,183 @@ def list_courses(db: Session = Depends(get_db)):
         "credits": c.credits
     } for c in courses]
 
+@app.get("/api/academic/faculty")
+def list_faculty(db: Session = Depends(get_db)):
+    faculty = db.query(models.User).filter(models.User.role == "faculty").order_by(models.User.name.asc()).all()
+    return [{
+        "id": f.id,
+        "name": f.name,
+        "initials": f.initials,
+        "department": f.department,
+        "isHOD": f.is_hod,
+        "email": f.email
+    } for f in faculty]
+
 @app.get("/api/academic/my-class")
-def get_my_class(user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
-    class_id = user.class_id if (user and user.class_id) else "SE-A"
-    students = db.query(models.StudentRecord).filter(models.StudentRecord.class_id == class_id).all()
+def get_my_class(
+    class_id: Optional[str] = Query(None),
+    user: models.User = Depends(require_current_user),
+    db: Session = Depends(get_db)
+):
+    if user.role == "student":
+        # FR: Students can only view their own class
+        if class_id and class_id != user.class_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Students can only view their own class."
+            )
+        target_class_id = user.class_id
+    else:
+        # Faculty / Admin / Council can specify class_id, defaulting to user's class or D12A
+        target_class_id = class_id or user.class_id or "D12A"
+
+    cls = db.query(models.ClassModel).filter(models.ClassModel.id == target_class_id).first()
+    class_name = cls.name if cls else target_class_id
+
+    students = db.query(models.StudentRecord).filter(models.StudentRecord.class_id == target_class_id).all()
     
-    # Courses associated with this class
-    cc_records = db.query(models.ClassCourse).filter(models.ClassCourse.class_id == class_id).all()
+    # Sort students by integer roll number
+    def roll_sort_key(s):
+        try:
+            return (0, int(s.roll_no))
+        except (ValueError, TypeError):
+            return (1, str(s.roll_no or ""))
+
+    sorted_students = sorted(students, key=roll_sort_key)
+
+    student_list = []
+    can_view_all_mobile = user.role in ["admin", "faculty"]
+    for s in sorted_students:
+        s_data = {
+            "id": s.id,
+            "name": s.name,
+            "rollNo": s.roll_no,
+            "class": s.class_id
+        }
+        # Mobile number privacy: return only to the student themself, faculty of that class, and admin
+        if can_view_all_mobile or s.id == user.id:
+            s_data["mobile"] = s.mobile
+        else:
+            s_data["mobile"] = None
+        student_list.append(s_data)
+
+    # Courses associated with this class from ClassCourse
+    cc_records = db.query(models.ClassCourse).filter(models.ClassCourse.class_id == target_class_id).all()
     courses_info = []
+    seen_cc = set()
     for cc in cc_records:
         course = db.query(models.CourseModel).filter(models.CourseModel.id == cc.course_id).first()
-        faculty = db.query(models.User).filter(models.User.id == cc.faculty_id).first()
-        if course:
+        faculty = db.query(models.User).filter(models.User.id == cc.faculty_id).first() if cc.faculty_id else None
+        key = (cc.course_id, cc.faculty_id, cc.batch, cc.session_kind)
+        if key not in seen_cc and course:
+            seen_cc.add(key)
+            fac_name = faculty.name if faculty else "Unassigned"
+            if faculty and faculty.initials:
+                fac_name += f" ({faculty.initials})"
             courses_info.append({
                 "id": course.id,
                 "code": course.code,
                 "name": course.name,
                 "credits": course.credits,
-                "faculty": faculty.name if faculty else "Unassigned"
+                "faculty": fac_name,
+                "batch": cc.batch,
+                "sessionKind": cc.session_kind
             })
 
     return {
-        "classId": class_id,
-        "className": "SE Computer Engineering - Div A",
-        "totalStudents": len(students),
-        "students": [{"id": s.id, "name": s.name, "rollNo": s.roll_no, "class": s.class_id} for s in students],
+        "classId": target_class_id,
+        "className": class_name,
+        "totalStudents": len(sorted_students),
+        "students": student_list,
         "courses": courses_info
+    }
+
+@app.get("/api/admin/users")
+def list_admin_users(
+    page: int = Query(1, ge=1),
+    limit: int = Query(20, ge=1, le=100),
+    search: Optional[str] = Query(None),
+    class_id: Optional[str] = Query(None),
+    role: Optional[str] = Query(None),
+    current_user: models.User = Depends(require_role("admin")),
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.User)
+
+    if role:
+        query = query.filter(models.User.role == role)
+    if class_id:
+        query = query.filter(models.User.class_id == class_id)
+    if search:
+        search_term = f"%{search.strip()}%"
+        student_subq = db.query(models.StudentRecord.id).filter(
+            models.StudentRecord.roll_no.ilike(search_term)
+        ).subquery()
+        query = query.filter(
+            models.User.name.ilike(search_term) |
+            models.User.email.ilike(search_term) |
+            models.User.id.ilike(search_term) |
+            models.User.id.in_(student_subq)
+        )
+
+    total = query.count()
+    users = query.order_by(models.User.role, models.User.class_id, models.User.id).offset((page - 1) * limit).limit(limit).all()
+
+    student_ids = [u.id for u in users if u.role == "student"]
+    student_records = {s.id: s for s in db.query(models.StudentRecord).filter(models.StudentRecord.id.in_(student_ids)).all()} if student_ids else {}
+
+    results = []
+    for u in users:
+        st = student_records.get(u.id)
+        results.append({
+            "id": u.id,
+            "name": u.name,
+            "email": u.email,
+            "role": u.role,
+            "department": u.department,
+            "class": u.class_id,
+            "rollNo": st.roll_no if st else None,
+            "mobile": st.mobile if st else None,
+            "initials": u.initials,
+            "isHOD": u.is_hod,
+            "firstLogin": u.first_login,
+            "isActive": u.is_active
+        })
+
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "users": results
+    }
+
+@app.get("/api/dev/demo-accounts")
+def get_demo_accounts(db: Session = Depends(get_db)):
+    if APP_ENV == "production":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Demo accounts endpoint is disabled in production."
+        )
+
+    student = db.query(models.StudentRecord).order_by(models.StudentRecord.class_id, models.StudentRecord.roll_no).first()
+    faculty = db.query(models.User).filter(models.User.role == "faculty").order_by(models.User.name).first()
+
+    return {
+        "admin": {"id": "ADM001", "name": "System Administrator", "role": "admin"},
+        "council": {"id": "CON001", "name": "Council Head", "role": "council"},
+        "student": {
+            "id": student.id,
+            "name": student.name,
+            "role": "student",
+            "class": student.class_id,
+            "rollNo": student.roll_no
+        } if student else None,
+        "faculty": {
+            "id": faculty.id,
+            "name": faculty.name,
+            "role": "faculty",
+            "initials": faculty.initials
+        } if faculty else None
     }
 
 # -------------------------------------------------------------
@@ -226,23 +377,13 @@ def get_my_class(user: Optional[models.User] = Depends(get_current_user), db: Se
 # -------------------------------------------------------------
 
 @app.get("/api/attendance/student")
-def get_student_attendance(user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
-    student_id = user.id if (user and user.role == "student") else "STU001"
+def get_student_attendance(user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
+    student_id = user.id
     
     courses = db.query(models.CourseModel).all()
     result = []
-    
-    # Pre-calculated seed statistics matching mock exactly
-    mock_stats = {
-        "CS301": {"total": 42, "present": 39, "pct": 92.9},
-        "CS302": {"total": 38, "present": 30, "pct": 78.9},
-        "CS303": {"total": 37, "present": 24, "pct": 64.9},
-        "CS304": {"total": 36, "present": 33, "pct": 91.7},
-        "CS305": {"total": 34, "present": 30, "pct": 88.2},
-    }
 
     for c in courses:
-        # Check actual database records for this student and course
         lectures = db.query(models.Lecture).filter(
             models.Lecture.course_id == c.id,
             models.Lecture.status == "Conducted"
@@ -256,20 +397,20 @@ def get_student_attendance(user: Optional[models.User] = Depends(get_current_use
             ).all()
             total = len(records)
             present = sum(1 for r in records if r.status == "Present")
-            pct = round((present / total * 100), 1) if total > 0 else 100.0
+            pct = round((present / total * 100), 1) if total > 0 else 0.0
         else:
-            m = mock_stats.get(c.id, {"total": 30, "present": 26, "pct": 86.7})
-            total = m["total"]
-            present = m["present"]
-            pct = m["pct"]
+            total = 0
+            present = 0
+            pct = 0.0
 
         result.append({
             "course": c.id,
+            "code": c.code,
             "name": c.name,
             "total": total,
             "present": present,
             "percentage": pct,
-            "isDefaulter": pct < DEFAULT_LOW_ATTENDANCE_THRESHOLD
+            "isDefaulter": pct < DEFAULT_LOW_ATTENDANCE_THRESHOLD and total > 0
         })
 
     overall_total = sum(item["total"] for item in result)
@@ -279,30 +420,49 @@ def get_student_attendance(user: Optional[models.User] = Depends(get_current_use
     return {
         "studentId": student_id,
         "overallPercentage": overall_pct,
-        "isOverallDefaulter": overall_pct < DEFAULT_LOW_ATTENDANCE_THRESHOLD,
+        "isOverallDefaulter": overall_pct < DEFAULT_LOW_ATTENDANCE_THRESHOLD and overall_total > 0,
         "courses": result
     }
 
 @app.get("/api/attendance/faculty")
-def get_faculty_attendance(db: Session = Depends(get_db)):
+def get_faculty_attendance(user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
     courses = db.query(models.CourseModel).all()
-    students = db.query(models.StudentRecord).all()
+    classes = db.query(models.ClassModel).all()
 
-    # Build defaulter list
-    defaulters = [
-        {"id": "STU003", "name": "Rohan Gupta", "rollNo": "22CS003", "course": "Operating Systems (CS303)", "percentage": 64.9},
-        {"id": "STU005", "name": "Karan Bhat", "rollNo": "22CS005", "course": "Operating Systems (CS303)", "percentage": 71.4},
-        {"id": "STU009", "name": "Aditya Verma", "rollNo": "22CS009", "course": "Database Systems (CS302)", "percentage": 68.2},
-    ]
+    defaulters = []
+    conducted_lecs = db.query(models.Lecture).filter(models.Lecture.status == "Conducted").all()
+    avg_att = 0.0
+    if conducted_lecs:
+        students = db.query(models.StudentRecord).all()
+        tot_all = 0
+        pres_all = 0
+        for s in students:
+            records = db.query(models.Attendance).filter(models.Attendance.student_id == s.id).all()
+            if records:
+                tot = len(records)
+                pres = sum(1 for r in records if r.status == "Present")
+                pct = round((pres / tot * 100), 1)
+                tot_all += tot
+                pres_all += pres
+                if pct < DEFAULT_LOW_ATTENDANCE_THRESHOLD:
+                    defaulters.append({
+                        "id": s.id,
+                        "name": s.name,
+                        "rollNo": s.roll_no,
+                        "class": s.class_id,
+                        "percentage": pct
+                    })
+        if tot_all > 0:
+            avg_att = round((pres_all / tot_all * 100), 1)
 
     return {
         "stats": {
-            "classes": 3,
+            "classes": len(classes),
             "courses": len(courses),
-            "avgAttendance": 82.5,
+            "avgAttendance": avg_att,
             "defaulters": len(defaulters),
-            "pendingAssignments": 3,
-            "activeQuizzes": 1
+            "pendingAssignments": 0,
+            "activeQuizzes": 0
         },
         "defaulters": defaulters
     }
@@ -328,7 +488,7 @@ def list_lectures(db: Session = Depends(get_db)):
     } for l in lectures]
 
 @app.post("/api/lectures/create")
-def create_lecture(req: schemas.LectureCreateRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_lecture(req: schemas.LectureCreateRequest, user: models.User = Depends(require_role(["faculty", "admin"])), db: Session = Depends(get_db)):
     course = db.query(models.CourseModel).filter(models.CourseModel.id == req.course_id).first()
     sched_faculty = db.query(models.User).filter(models.User.id == (req.scheduled_faculty_id or req.actual_faculty_id)).first()
     act_faculty = db.query(models.User).filter(models.User.id == req.actual_faculty_id).first()
@@ -355,7 +515,6 @@ def create_lecture(req: schemas.LectureCreateRequest, user: Optional[models.User
     db.commit()
     db.refresh(lec)
 
-    # Notification for substitute or extra lecture per FR-NOTIF-004
     if req.lecture_type in ["Substitute", "Extra"]:
         notif = models.Notification(
             id=f"N_{uuid.uuid4().hex[:6]}",
@@ -370,21 +529,19 @@ def create_lecture(req: schemas.LectureCreateRequest, user: Optional[models.User
     return {"message": "Lecture created successfully", "lectureId": lec.id}
 
 @app.post("/api/attendance/mark")
-def mark_attendance(req: schemas.MarkAttendanceRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def mark_attendance(req: schemas.MarkAttendanceRequest, user: models.User = Depends(require_role(["faculty", "admin"])), db: Session = Depends(get_db)):
     lec = db.query(models.Lecture).filter(models.Lecture.id == req.lecture_id).first()
     if not lec:
         raise HTTPException(status_code=404, detail="Lecture not found")
 
-    faculty_id = user.id if user else "FAC001"
+    faculty_id = user.id
     
-    # Save attendance records per FR-ATT-004
     for item in req.attendance:
         existing = db.query(models.Attendance).filter(
             models.Attendance.lecture_id == req.lecture_id,
             models.Attendance.student_id == item.student_id
         ).first()
         if existing:
-            # Audit change per FR-ATT-006
             if existing.status != item.status:
                 audit = models.AttendanceAudit(
                     attendance_id=existing.id,
@@ -414,8 +571,53 @@ def mark_attendance(req: schemas.MarkAttendanceRequest, user: Optional[models.Us
 # -------------------------------------------------------------
 
 @app.get("/api/timetable")
-def get_timetable(db: Session = Depends(get_db)):
-    entries = db.query(models.TimetableEntry).all()
+def get_timetable(
+    class_id: Optional[str] = Query(None),
+    faculty_id: Optional[str] = Query(None),
+    day: Optional[str] = Query(None),
+    user: models.User = Depends(require_current_user),
+    db: Session = Depends(get_db)
+):
+    query = db.query(models.TimetableEntry)
+
+    if user.role == "student":
+        # Section 5: Student sees only their own class's full timetable (all batches)
+        if class_id and class_id != user.class_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Students can only view their own class timetable."
+            )
+        target_class = user.class_id
+        query = query.filter(models.TimetableEntry.class_id == target_class)
+    elif user.role == "faculty":
+        # Faculty: if class_id provided, filter by class; otherwise show own sessions across classes
+        if class_id:
+            query = query.filter(models.TimetableEntry.class_id == class_id)
+        elif faculty_id:
+            query = query.filter(
+                (models.TimetableEntry.faculty_id == faculty_id) |
+                (models.TimetableEntry.faculty_initials == faculty_id)
+            )
+        else:
+            query = query.filter(
+                (models.TimetableEntry.faculty_id == user.id) |
+                (models.TimetableEntry.faculty_initials == (user.initials or ""))
+            )
+    else:
+        # Admin / Council
+        if class_id:
+            query = query.filter(models.TimetableEntry.class_id == class_id)
+        if faculty_id:
+            query = query.filter(
+                (models.TimetableEntry.faculty_id == faculty_id) |
+                (models.TimetableEntry.faculty_initials == faculty_id)
+            )
+
+    if day:
+        query = query.filter(models.TimetableEntry.day_of_week == day)
+
+    entries = query.order_by(models.TimetableEntry.start_time.asc()).all()
+
     grouped: Dict[str, List[Any]] = {
         "Monday": [], "Tuesday": [], "Wednesday": [], "Thursday": [], "Friday": []
     }
@@ -429,8 +631,16 @@ def get_timetable(db: Session = Depends(get_db)):
                 "course": e.course_name,
                 "code": e.course_code,
                 "faculty": e.faculty_name,
+                "facultyInitials": e.faculty_initials,
                 "room": e.classroom,
-                "type": e.lecture_type
+                "type": e.lecture_type,
+                "class": e.class_id,
+                "classId": e.class_id,
+                "batch": e.batch,
+                "sessionKind": e.session_kind,
+                "groupId": e.group_id,
+                "isAmbiguous": e.is_ambiguous,
+                "sourceRef": e.source_ref
             })
     return grouped
 
@@ -439,43 +649,65 @@ def check_timetable_conflict(
     day: str = Query(...),
     start_time: str = Query(...),
     end_time: str = Query(...),
-    classroom: str = Query(...),
-    faculty_id: str = Query(...),
-    class_id: str = Query(...),
+    classroom: Optional[str] = Query(None),
+    faculty_id: Optional[str] = Query(None),
+    class_id: Optional[str] = Query(None),
+    batch: Optional[str] = Query(None),
+    group_id: Optional[str] = Query(None),
+    course_code: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
-    """Detects timetable conflicts per FR-TT-009, 010, 011."""
+    """Detects timetable conflicts per FR-TT-009, 010, 011, handling parallel batches and joint groups."""
     conflicts = []
     
     # 1. Faculty overlap check (FR-TT-009)
-    faculty_overlap = db.query(models.TimetableEntry).filter(
-        models.TimetableEntry.day_of_week == day,
-        models.TimetableEntry.faculty_id == faculty_id,
-        models.TimetableEntry.start_time < end_time,
-        models.TimetableEntry.end_time > start_time
-    ).first()
-    if faculty_overlap:
-        conflicts.append(f"Faculty is already assigned to {faculty_overlap.course_code} ({faculty_overlap.time})")
+    if faculty_id:
+        overlapping_faculty = db.query(models.TimetableEntry).filter(
+            models.TimetableEntry.day_of_week == day,
+            (models.TimetableEntry.faculty_id == faculty_id) | (models.TimetableEntry.faculty_initials == faculty_id),
+            models.TimetableEntry.start_time < end_time,
+            models.TimetableEntry.end_time > start_time
+        ).all()
+        for e in overlapping_faculty:
+            if group_id and e.group_id == group_id:
+                continue
+            if course_code and e.course_code == course_code and e.classroom == classroom:
+                continue
+            conflicts.append(f"Faculty is already assigned to {e.course_code} ({e.time}) in room {e.classroom}")
+            break
 
     # 2. Classroom overlap check (FR-TT-010)
-    room_overlap = db.query(models.TimetableEntry).filter(
-        models.TimetableEntry.day_of_week == day,
-        models.TimetableEntry.classroom == classroom,
-        models.TimetableEntry.start_time < end_time,
-        models.TimetableEntry.end_time > start_time
-    ).first()
-    if room_overlap:
-        conflicts.append(f"Classroom {classroom} is already occupied by {room_overlap.course_code} ({room_overlap.time})")
+    if classroom:
+        overlapping_rooms = db.query(models.TimetableEntry).filter(
+            models.TimetableEntry.day_of_week == day,
+            models.TimetableEntry.classroom == classroom,
+            models.TimetableEntry.start_time < end_time,
+            models.TimetableEntry.end_time > start_time
+        ).all()
+        for e in overlapping_rooms:
+            if group_id and e.group_id == group_id:
+                continue
+            if course_code and e.course_code == course_code and (faculty_id is None or e.faculty_id == faculty_id or e.faculty_initials == faculty_id):
+                continue
+            conflicts.append(f"Classroom {classroom} is already occupied by {e.course_code} ({e.time})")
+            break
 
     # 3. Class overlap check (FR-TT-011)
-    class_overlap = db.query(models.TimetableEntry).filter(
-        models.TimetableEntry.day_of_week == day,
-        models.TimetableEntry.class_id == class_id,
-        models.TimetableEntry.start_time < end_time,
-        models.TimetableEntry.end_time > start_time
-    ).first()
-    if class_overlap:
-        conflicts.append(f"Class {class_id} already has a scheduled lecture: {class_overlap.course_code}")
+    if class_id:
+        overlapping_class = db.query(models.TimetableEntry).filter(
+            models.TimetableEntry.day_of_week == day,
+            models.TimetableEntry.class_id == class_id,
+            models.TimetableEntry.start_time < end_time,
+            models.TimetableEntry.end_time > start_time
+        ).all()
+        for e in overlapping_class:
+            if group_id and e.group_id == group_id:
+                continue
+            # Practical batches of the same class running in parallel are not a conflict if their batches differ
+            if batch and e.batch and e.batch != batch:
+                continue
+            conflicts.append(f"Class {class_id} already has a scheduled session: {e.course_code} ({e.time})")
+            break
 
     return {
         "hasConflict": len(conflicts) > 0,
@@ -489,43 +721,78 @@ def check_timetable_conflict(
 @app.get("/api/classrooms")
 def get_all_classrooms(db: Session = Depends(get_db)):
     rooms = db.query(models.Classroom).all()
-    return [{
-        "id": r.id,
-        "name": r.name,
-        "building": r.building,
-        "capacity": r.capacity,
-        "facilities": json.loads(r.facilities_json)
-    } for r in rooms]
+    results = []
+    for r in rooms:
+        fac = []
+        if r.facilities_json:
+            try:
+                fac = json.loads(r.facilities_json)
+            except Exception:
+                fac = []
+        results.append({
+            "id": r.id,
+            "name": r.name,
+            "building": r.building or "—",
+            "capacity": r.capacity or "—",
+            "facilities": fac
+        })
+    return results
 
 @app.post("/api/classrooms/search-availability")
 def search_classroom_availability(req: schemas.ClassroomSearchRequest, db: Session = Depends(get_db)):
-    """Compares requested time range against lectures per FR-ROOM-001 to 005."""
+    """Compares requested time range against lectures and weekly timetable per FR-ROOM-001 to 005."""
     rooms = db.query(models.Classroom).all()
     
-    # Overlapping lectures on that date
+    # Determine day of week from date
+    day_of_week = None
+    try:
+        dt = datetime.strptime(req.date, "%Y-%m-%d")
+        day_of_week = dt.strftime("%A")
+    except Exception:
+        day_of_week = None
+
+    # Check lectures on that date
     overlapping_lectures = db.query(models.Lecture).filter(
         models.Lecture.date == req.date,
         models.Lecture.status != "Cancelled",
         models.Lecture.start_time < req.end_time,
         models.Lecture.end_time > req.start_time
     ).all()
+    occupied_rooms: Dict[str, str] = {
+        l.classroom: f"{l.course_code} - {l.course_name} ({l.actual_faculty_name})"
+        for l in overlapping_lectures if l.classroom
+    }
 
-    occupied_rooms = {l.classroom: l for l in overlapping_lectures}
+    # Check regular weekly timetable for that day of week
+    if day_of_week:
+        overlapping_tt = db.query(models.TimetableEntry).filter(
+            models.TimetableEntry.day_of_week == day_of_week,
+            models.TimetableEntry.start_time < req.end_time,
+            models.TimetableEntry.end_time > req.start_time
+        ).all()
+        for entry in overlapping_tt:
+            if entry.classroom and entry.classroom not in occupied_rooms:
+                fac = entry.faculty_name or entry.faculty_initials or "Faculty"
+                occupied_rooms[entry.classroom] = f"{entry.course_code} - {entry.course_name} ({fac})"
 
     results = []
     for r in rooms:
         is_occupied = r.name in occupied_rooms
-        occupied_by = None
-        if is_occupied:
-            lec = occupied_rooms[r.name]
-            occupied_by = f"{lec.course_code} - {lec.course_name} ({lec.actual_faculty_name})"
+        occupied_by = occupied_rooms.get(r.name)
         
+        fac = []
+        if r.facilities_json:
+            try:
+                fac = json.loads(r.facilities_json)
+            except Exception:
+                fac = []
+
         results.append({
             "id": r.id,
             "name": r.name,
-            "building": r.building,
-            "capacity": r.capacity,
-            "facilities": json.loads(r.facilities_json),
+            "building": r.building or "—",
+            "capacity": r.capacity or "—",
+            "facilities": fac,
             "status": "Occupied" if is_occupied else "Available",
             "occupiedBy": occupied_by
         })
@@ -566,9 +833,9 @@ def list_study_materials(course_id: Optional[str] = None, db: Session = Depends(
 # -------------------------------------------------------------
 
 @app.get("/api/assignments")
-def list_assignments(user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_assignments(user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
     assignments = db.query(models.Assignment).all()
-    student_id = user.id if (user and user.role == "student") else "STU001"
+    student_id = user.id
     
     results = []
     for a in assignments:
@@ -607,9 +874,9 @@ def list_assignments(user: Optional[models.User] = Depends(get_current_user), db
     return results
 
 @app.post("/api/assignments/{assignment_id}/submit")
-def submit_assignment(assignment_id: str, req: schemas.AssignmentSubmitRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
-    student_id = user.id if user else "STU001"
-    student_name = user.name if user else "Arjun Sharma"
+def submit_assignment(assignment_id: str, req: schemas.AssignmentSubmitRequest, user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
+    student_id = user.id
+    student_name = user.name
     
     asg = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
     if not asg:
@@ -644,7 +911,7 @@ def submit_assignment(assignment_id: str, req: schemas.AssignmentSubmitRequest, 
     return {"message": "Assignment submitted successfully", "status": sub_status}
 
 @app.post("/api/assignments/submissions/{submission_id}/grade")
-def grade_submission(submission_id: int, req: schemas.GradeSubmissionRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def grade_submission(submission_id: int, req: schemas.GradeSubmissionRequest, user: models.User = Depends(require_role(["faculty", "admin"])), db: Session = Depends(get_db)):
     sub = db.query(models.AssignmentSubmission).filter(models.AssignmentSubmission.id == submission_id).first()
     if not sub:
         raise HTTPException(status_code=404, detail="Submission not found")
@@ -652,7 +919,7 @@ def grade_submission(submission_id: int, req: schemas.GradeSubmissionRequest, us
     sub.obtained_marks = req.marks
     sub.feedback = req.feedback
     sub.status = "graded"
-    sub.graded_by = user.name if user else "Faculty"
+    sub.graded_by = user.name
     sub.graded_at = datetime.utcnow().strftime("%Y-%m-%dT%H:%M:%S")
     db.commit()
 
@@ -705,8 +972,8 @@ def get_quiz_questions(quiz_id: str, db: Session = Depends(get_db)):
     } for q in questions]
 
 @app.post("/api/quizzes/{quiz_id}/submit")
-def submit_quiz_attempt(quiz_id: str, req: schemas.QuizSubmitRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
-    student_id = user.id if user else "STU001"
+def submit_quiz_attempt(quiz_id: str, req: schemas.QuizSubmitRequest, user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
+    student_id = user.id
     questions = db.query(models.QuizQuestion).filter(models.QuizQuestion.quiz_id == quiz_id).all()
 
     correct_count = 0
@@ -727,7 +994,6 @@ def submit_quiz_attempt(quiz_id: str, req: schemas.QuizSubmitRequest, user: Opti
     score = correct_count
     total_marks = total_questions
 
-    # Save attempt deterministically per FR-QUIZ-006
     attempt = models.QuizAttempt(
         quiz_id=quiz_id,
         student_id=student_id,
@@ -741,7 +1007,6 @@ def submit_quiz_attempt(quiz_id: str, req: schemas.QuizSubmitRequest, user: Opti
     db.add(attempt)
     db.commit()
 
-    # Generate AI Report per Section 4.17
     pct = round((score / total_marks * 100), 1) if total_marks > 0 else 0
     topic_breakdown = []
     strengths = []
@@ -768,7 +1033,7 @@ def submit_quiz_attempt(quiz_id: str, req: schemas.QuizSubmitRequest, user: Opti
         improvements_json=json.dumps(improvements or ["Revision of edge cases"]),
         suggestions_json=json.dumps([
             "Review key topics from Unit lectures",
-            "Solve 5 practice problems from recommended textbooks",
+            "Solve practice problems from recommended textbooks",
             "Re-attempt past quizzes for active recall"
         ]),
         topic_performance_json=json.dumps(topic_breakdown),
@@ -789,42 +1054,19 @@ def submit_quiz_attempt(quiz_id: str, req: schemas.QuizSubmitRequest, user: Opti
 # -------------------------------------------------------------
 
 @app.get("/api/ai-report/{quiz_id}")
-def get_ai_report(quiz_id: str, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
-    student_id = user.id if user else "STU001"
+def get_ai_report(quiz_id: str, user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
     report = db.query(models.AIReport).filter(
         models.AIReport.quiz_id == quiz_id,
-        models.AIReport.student_id == student_id
+        models.AIReport.student_id == user.id
     ).order_by(models.AIReport.created_at.desc()).first()
 
     quiz = db.query(models.Quiz).filter(models.Quiz.id == quiz_id).first()
 
     if not report:
-        # Fallback to seeded demo report
-        return {
-            "quizId": quiz_id,
-            "quizTitle": quiz.title if quiz else "Quiz Evaluation",
-            "score": 78,
-            "correct": 7,
-            "incorrect": 2,
-            "unattempted": 1,
-            "total": 10,
-            "strengths": ["SQL Joins", "Normalization concepts", "Relational integrity"],
-            "improvements": ["Indexing (B+ tree, Hash)", "Transaction isolation levels", "Query optimization"],
-            "suggestions": [
-                "Review B+ tree and Hash index structures with practice problems",
-                "Practice transaction isolation level scenarios — Read Committed vs Serializable",
-                "Work through 5–8 query optimization examples from the textbook",
-                "Attempt previous year questions on indexing"
-            ],
-            "topicPerformance": [
-                {"topic": "Normalization", "score": 92, "questions": 3},
-                {"topic": "SQL Joins", "score": 88, "questions": 2},
-                {"topic": "Transactions", "score": 65, "questions": 2},
-                {"topic": "Indexing", "score": 61, "questions": 2},
-                {"topic": "Referential Integrity", "score": 100, "questions": 1}
-            ],
-            "status": "Ready"
-        }
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AI report not found for this quiz and user."
+        )
 
     return {
         "quizId": report.quiz_id,
@@ -846,14 +1088,9 @@ def get_ai_report(quiz_id: str, user: Optional[models.User] = Depends(get_curren
 # -------------------------------------------------------------
 
 @app.get("/api/results")
-def get_results(user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
-    return [
-        {"course": "CS301", "name": "Data Structures & Algorithms", "assignments": 88, "quizzes": 74, "average": 81, "trend": "up"},
-        {"course": "CS302", "name": "Database Management Systems", "assignments": 82, "quizzes": 78, "average": 80, "trend": "up"},
-        {"course": "CS303", "name": "Operating Systems", "assignments": 73, "quizzes": 69, "average": 71, "trend": "down"},
-        {"course": "CS304", "name": "Computer Networks", "assignments": 91, "quizzes": 85, "average": 88, "trend": "up"},
-        {"course": "CS305", "name": "Software Engineering", "assignments": 78, "quizzes": 72, "average": 75, "trend": "stable"},
-    ]
+def get_results(user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
+    # Results start empty for real imported students; proper empty state rendered
+    return []
 
 # -------------------------------------------------------------
 # 11. DASHBOARDS (FR-DASH-001 to 005)
@@ -863,24 +1100,36 @@ def get_results(user: Optional[models.User] = Depends(get_current_user), db: Ses
 def get_dashboard_stats(role: str = Query("student"), user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
     if role == "admin":
         return {
-            "totalStudents": db.query(models.StudentRecord).count() or 847,
-            "totalFaculty": db.query(models.User).filter(models.User.role == "faculty").count() or 62,
-            "totalClasses": db.query(models.ClassModel).count() or 24,
-            "totalCourses": db.query(models.CourseModel).count() or 118,
-            "totalClassrooms": db.query(models.Classroom).count() or 38,
-            "avgAttendance": 82,
-            "lowAttendanceCount": 73,
-            "pendingGrievances": db.query(models.Grievance).filter(models.Grievance.status != "RESOLVED").count() or 12,
-            "upcomingEvents": db.query(models.CouncilEvent).count() or 4
+            "totalStudents": db.query(models.StudentRecord).count(),
+            "totalFaculty": db.query(models.User).filter(models.User.role == "faculty").count(),
+            "totalClasses": db.query(models.ClassModel).count(),
+            "totalCourses": db.query(models.CourseModel).count(),
+            "totalClassrooms": db.query(models.Classroom).count(),
+            "avgAttendance": 0.0,
+            "lowAttendanceCount": 0,
+            "pendingGrievances": db.query(models.Grievance).filter(models.Grievance.status != "RESOLVED").count(),
+            "upcomingEvents": db.query(models.CouncilEvent).count()
         }
     elif role == "faculty":
+        fac_id = user.id if user and user.role == "faculty" else None
+        if fac_id:
+            classes_count = db.query(models.TimetableEntry.class_id).filter(
+                (models.TimetableEntry.faculty_id == fac_id) | (models.TimetableEntry.faculty_initials == (user.initials or ""))
+            ).distinct().count()
+            courses_count = db.query(models.TimetableEntry.course_code).filter(
+                (models.TimetableEntry.faculty_id == fac_id) | (models.TimetableEntry.faculty_initials == (user.initials or ""))
+            ).distinct().count()
+        else:
+            classes_count = db.query(models.ClassModel).count()
+            courses_count = db.query(models.CourseModel).count()
+
         return {
-            "classes": 3,
-            "courses": 5,
-            "avgAttendance": 82,
-            "defaulters": 12,
-            "pendingAssignments": 3,
-            "activeQuizzes": 1
+            "classes": classes_count,
+            "courses": courses_count,
+            "avgAttendance": 0.0,
+            "defaulters": 0,
+            "pendingAssignments": 0,
+            "activeQuizzes": 0
         }
     return {}
 
@@ -904,13 +1153,13 @@ def list_announcements(db: Session = Depends(get_db)):
     } for a in items]
 
 @app.post("/api/announcements")
-def create_announcement(req: schemas.AnnouncementCreateRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_announcement(req: schemas.AnnouncementCreateRequest, user: models.User = Depends(require_role(["admin", "faculty", "council"])), db: Session = Depends(get_db)):
     ann = models.Announcement(
         id=f"AN{uuid.uuid4().hex[:4].upper()}",
         title=req.title,
         content=req.content,
-        publisher_name=user.name if user else "Administration",
-        publisher_role=user.role.title() if user else "Admin",
+        publisher_name=user.name,
+        publisher_role=user.role.title(),
         date=datetime.utcnow().strftime("%Y-%m-%d"),
         audience=req.audience,
         attachment=req.attachment,
@@ -918,7 +1167,6 @@ def create_announcement(req: schemas.AnnouncementCreateRequest, user: Optional[m
     )
     db.add(ann)
 
-    # Notify users
     notif = models.Notification(
         id=f"N_{uuid.uuid4().hex[:6]}",
         message=f"New announcement: {req.title}",
@@ -932,7 +1180,7 @@ def create_announcement(req: schemas.AnnouncementCreateRequest, user: Optional[m
     return {"message": "Announcement published successfully"}
 
 @app.get("/api/notifications")
-def list_notifications(user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_notifications(user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
     notifs = db.query(models.Notification).order_by(models.Notification.created_at.desc()).all()
     return [{
         "id": n.id,
@@ -988,7 +1236,7 @@ def list_events(db: Session = Depends(get_db)):
     } for e in items]
 
 @app.post("/api/events")
-def create_event(req: schemas.CouncilEventCreateRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_event(req: schemas.CouncilEventCreateRequest, user: models.User = Depends(require_role(["council", "admin"])), db: Session = Depends(get_db)):
     event_id = f"EV{uuid.uuid4().hex[:4].upper()}"
     ev = models.CouncilEvent(
         id=event_id,
@@ -1002,11 +1250,10 @@ def create_event(req: schemas.CouncilEventCreateRequest, user: Optional[models.U
         organizer=req.organizer,
         registration_link=req.registration_link,
         visibility=req.visibility,
-        created_by=user.id if user else "CON001"
+        created_by=user.id
     )
     db.add(ev)
 
-    # FR-EVENT-005: Auto-create calendar entry
     cal = models.CalendarEntry(
         title=req.title,
         category="Events",
@@ -1017,7 +1264,6 @@ def create_event(req: schemas.CouncilEventCreateRequest, user: Optional[models.U
     )
     db.add(cal)
 
-    # FR-EVENT-006: Auto-generate announcement
     ann = models.Announcement(
         id=f"AN{uuid.uuid4().hex[:4].upper()}",
         title=req.title,
@@ -1058,7 +1304,7 @@ def list_forums(course_code: Optional[str] = None, db: Session = Depends(get_db)
     } for t in topics]
 
 @app.post("/api/forums")
-def create_forum_topic(req: schemas.ForumTopicCreateRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def create_forum_topic(req: schemas.ForumTopicCreateRequest, user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
     now_str = datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     topic = models.ForumTopic(
         id=f"F{uuid.uuid4().hex[:4].upper()}",
@@ -1066,8 +1312,8 @@ def create_forum_topic(req: schemas.ForumTopicCreateRequest, user: Optional[mode
         course_code=req.course_id,
         title=req.title,
         content=req.content,
-        author_id=user.id if user else "STU001",
-        author_name=user.name if user else "Student",
+        author_id=user.id,
+        author_name=user.name,
         created_at=now_str,
         pinned=False,
         replies_count=0,
@@ -1089,16 +1335,16 @@ def get_forum_replies(topic_id: str, db: Session = Depends(get_db)):
     } for r in replies]
 
 @app.post("/api/forums/{topic_id}/replies")
-def post_forum_reply(topic_id: str, req: schemas.ForumReplyCreateRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def post_forum_reply(topic_id: str, req: schemas.ForumReplyCreateRequest, user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
     topic = db.query(models.ForumTopic).filter(models.ForumTopic.id == topic_id).first()
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
     reply = models.ForumReply(
         topic_id=topic_id,
-        author_id=user.id if user else "STU001",
-        author_name=user.name if user else "Student",
-        author_role=user.role.title() if user else "Student",
+        author_id=user.id,
+        author_name=user.name,
+        author_role=user.role.title(),
         content=req.content,
         created_at=datetime.utcnow().strftime("%Y-%m-%d %H:%M")
     )
@@ -1113,9 +1359,9 @@ def post_forum_reply(topic_id: str, req: schemas.ForumReplyCreateRequest, user: 
 # -------------------------------------------------------------
 
 @app.get("/api/grievances")
-def list_grievances(user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def list_grievances(user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
     query = db.query(models.Grievance)
-    if user and user.role == "student":
+    if user.role == "student":
         # Scoped to student per FR-GRV-006
         query = query.filter(models.Grievance.student_id == user.id)
     items = query.order_by(models.Grievance.submitted_at.desc()).all()
@@ -1133,12 +1379,12 @@ def list_grievances(user: Optional[models.User] = Depends(get_current_user), db:
     } for g in items]
 
 @app.post("/api/grievances")
-def submit_grievance(req: schemas.GrievanceCreateRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def submit_grievance(req: schemas.GrievanceCreateRequest, user: models.User = Depends(require_current_user), db: Session = Depends(get_db)):
     today_str = datetime.utcnow().strftime("%Y-%m-%d")
     gr = models.Grievance(
         id=f"GR{uuid.uuid4().hex[:4].upper()}",
-        student_id=user.id if user else "STU001",
-        student_name=user.name if user else "Arjun Sharma",
+        student_id=user.id,
+        student_name=user.name,
         subject=req.subject,
         category=req.category,
         description=req.description,
@@ -1152,7 +1398,7 @@ def submit_grievance(req: schemas.GrievanceCreateRequest, user: Optional[models.
     return {"message": "Grievance submitted successfully", "grievanceId": gr.id}
 
 @app.patch("/api/grievances/{grievance_id}")
-def update_grievance(grievance_id: str, req: schemas.GrievanceUpdateRequest, user: Optional[models.User] = Depends(get_current_user), db: Session = Depends(get_db)):
+def update_grievance(grievance_id: str, req: schemas.GrievanceUpdateRequest, user: models.User = Depends(require_role(["admin", "faculty", "council"])), db: Session = Depends(get_db)):
     gr = db.query(models.Grievance).filter(models.Grievance.id == grievance_id).first()
     if not gr:
         raise HTTPException(status_code=404, detail="Grievance not found")
@@ -1164,9 +1410,8 @@ def update_grievance(grievance_id: str, req: schemas.GrievanceUpdateRequest, use
     if req.assigned_to:
         gr.assigned_to = req.assigned_to
 
-    # Log audit per NFR-SEC-008
     audit = models.AuditLog(
-        user_id=user.id if user else "ADMIN",
+        user_id=user.id,
         action="GRIEVANCE_UPDATED",
         resource=f"Grievance:{grievance_id}",
         details=f"Status set to {req.status}"

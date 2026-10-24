@@ -1,7 +1,7 @@
-import React from 'react';
-import { Users, ClipboardList, AlertTriangle, BookOpen, PenSquare, HelpCircle, ChevronRight, Plus, Clock } from 'lucide-react';
+import React, { useState, useEffect } from 'react';
+import { Users, ClipboardList, AlertTriangle, BookOpen, PenSquare, ChevronRight, Clock } from 'lucide-react';
 import { Card, MetricCard, Badge, ProgressBar, SectionHeader } from '../components/ui';
-import { FACULTY_STATS, STUDENTS, ATTENDANCE_DATA, TIMETABLE } from '../data/mock';
+import { api } from '../services/api';
 
 interface Props {
   onNavigate: (page: string) => void;
@@ -9,35 +9,68 @@ interface Props {
   isHOD?: boolean;
 }
 
-const CLASSES = [
-  { name: 'SE-A', division: 'A', year: '2022–23', students: 62, courses: ['CS301', 'CS302'], nextLecture: '09:00 — Data Structures' },
-  { name: 'SE-B', division: 'B', year: '2022–23', students: 58, courses: ['CS302'], nextLecture: '11:15 — Database Systems' },
-  { name: 'TE-A', division: 'A', year: '2021–22', students: 55, courses: ['CS401'], nextLecture: '14:00 — Advanced Databases' },
-];
-
-const DEFAULTERS = [
-  { name: 'Vikram Nair', class: 'SE-A', course: 'CS303', attendance: 62, status: 'Defaulter' },
-  { name: 'Karan Bhat', class: 'SE-A', course: 'CS302', attendance: 68, status: 'Warning' },
-  { name: 'Pooja Sharma', class: 'SE-B', course: 'CS303', attendance: 61, status: 'Defaulter' },
-  { name: 'Aditya Verma', class: 'SE-A', course: 'CS303', attendance: 72, status: 'Warning' },
-];
-
 function getGreeting() {
   const h = new Date().getHours();
   return h < 12 ? 'Good morning' : h < 17 ? 'Good afternoon' : 'Good evening';
 }
 
 export default function FacultyDashboard({ onNavigate, userName, isHOD }: Props) {
-  const today = TIMETABLE['Wednesday'];
+  const [stats, setStats] = useState({
+    classes: 0,
+    avgAttendance: 0,
+    defaulters: 0,
+    pendingAssignments: 0,
+    lecturesToday: 0
+  });
+  const [todayLectures, setTodayLectures] = useState<any[]>([]);
+  const [courseAttendance, setCourseAttendance] = useState<any[]>([]);
+  const [defaultersList, setDefaultersList] = useState<any[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const currentDay = days[new Date().getDay()];
+    const queryDay = (currentDay === 'Sunday' || currentDay === 'Saturday') ? 'Monday' : currentDay;
+
+    Promise.allSettled([
+      api.getDashboardStats('faculty'),
+      api.getTimetable(),
+      api.getFacultyAttendance()
+    ]).then(([statsRes, ttRes, attRes]) => {
+      if (!isMounted) return;
+
+      if (statsRes.status === 'fulfilled' && statsRes.value) {
+        setStats(statsRes.value);
+      }
+      if (ttRes.status === 'fulfilled' && ttRes.value) {
+        const entries = ttRes.value[queryDay] || [];
+        setTodayLectures(entries);
+      }
+      if (attRes.status === 'fulfilled' && attRes.value) {
+        if (Array.isArray(attRes.value.courses)) {
+          setCourseAttendance(attRes.value.courses);
+        }
+        if (Array.isArray(attRes.value.defaulters)) {
+          setDefaultersList(attRes.value.defaulters);
+        }
+      }
+      setLoading(false);
+    });
+
+    return () => { isMounted = false; };
+  }, []);
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-7">
       {/* Greeting */}
       <div className="flex items-start justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-[#1a2e1e]">{getGreeting()}, Prof. {userName.split(' ').pop()}</h1>
+          <h1 className="text-2xl font-bold text-[#1a2e1e]">{getGreeting()}, {userName}</h1>
           <p className="text-sm text-[#7a6a55] mt-0.5">
-            {isHOD ? 'Faculty · Department Head' : 'Faculty'} · Computer Science
+            {isHOD ? 'Faculty · Department Head' : 'Faculty Member'} · Engineering
           </p>
         </div>
         {isHOD && (
@@ -50,113 +83,130 @@ export default function FacultyDashboard({ onNavigate, userName, isHOD }: Props)
 
       {/* Metrics */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-        <MetricCard label="My Classes" value={FACULTY_STATS.classes} icon={Users} onClick={() => onNavigate('my-class')} />
-        <MetricCard label="Avg Attendance" value={`${FACULTY_STATS.avgAttendance}%`} icon={ClipboardList} color="#2a6a82" onClick={() => onNavigate('faculty-attendance')} />
-        <MetricCard label="Defaulters" value={FACULTY_STATS.defaulters} sub="Below 75%" icon={AlertTriangle} color="#b04040" onClick={() => onNavigate('defaulters')} />
-        <MetricCard label="Pending Grading" value={FACULTY_STATS.pendingAssignments} icon={PenSquare} color="#7a6000" onClick={() => onNavigate('assignments')} />
+        <MetricCard
+          label="My Classes"
+          value={stats.classes}
+          icon={Users}
+          onClick={() => onNavigate('my-class')}
+        />
+        <MetricCard
+          label="Avg Attendance"
+          value={stats.avgAttendance > 0 ? `${stats.avgAttendance}%` : 'N/A'}
+          icon={ClipboardList}
+          color="#2a6a82"
+          onClick={() => onNavigate('faculty-attendance')}
+        />
+        <MetricCard
+          label="Defaulters"
+          value={stats.defaulters}
+          sub="Below 75% attendance"
+          icon={AlertTriangle}
+          color="#b04040"
+          onClick={() => onNavigate('defaulters')}
+        />
+        <MetricCard
+          label="Pending Grading"
+          value={stats.pendingAssignments}
+          icon={PenSquare}
+          color="#7a6000"
+          onClick={() => onNavigate('assignments')}
+        />
       </div>
 
       <div className="grid lg:grid-cols-3 gap-6">
         {/* Today's schedule */}
         <div className="lg:col-span-2 space-y-4">
           <div className="flex items-center justify-between">
-            <h3 className="text-base font-bold text-[#1a2e1e]">Today's Lectures</h3>
-            <button onClick={() => onNavigate('timetable')} className="text-xs text-[#2F4F3A] font-semibold hover:underline flex items-center gap-1">Full timetable <ChevronRight size={13} /></button>
+            <h3 className="text-base font-bold text-[#1a2e1e]">Today's Scheduled Sessions</h3>
+            <button onClick={() => onNavigate('timetable')} className="text-xs text-[#2F4F3A] font-semibold hover:underline flex items-center gap-1">
+              Full timetable <ChevronRight size={13} />
+            </button>
           </div>
-          <div className="space-y-2.5">
-            {today.map((lecture, i) => (
-              <Card key={i} className="p-4 flex items-center gap-4">
-                <div className="text-center shrink-0 w-16">
-                  <p className="text-xs font-bold text-[#2F4F3A]">{lecture.time.split('–')[0]}</p>
-                  <p className="text-[10px] text-[#9a8a75]">– {lecture.time.split('–')[1]}</p>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <p className="text-sm font-semibold text-[#1a2e1e]">{lecture.course}</p>
-                  <p className="text-xs text-[#7a6a55]">SE-A · {lecture.room}</p>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Badge variant={lecture.type.toLowerCase() as any}>{lecture.type}</Badge>
-                  <button onClick={() => onNavigate('faculty-attendance')} className="text-xs bg-[#2F4F3A] text-[#F4F1E6] px-3 py-1.5 rounded-lg font-medium hover:bg-[#243B2D] transition-colors">
-                    Mark
-                  </button>
-                </div>
-              </Card>
-            ))}
-          </div>
+
+          {todayLectures.length === 0 ? (
+            <Card className="p-8 text-center text-[#7a6a55] text-sm">
+              No sessions scheduled for today.
+            </Card>
+          ) : (
+            <div className="space-y-2.5">
+              {todayLectures.map((lecture, i) => (
+                <Card key={i} className="p-4 flex items-center gap-4">
+                  <div className="text-center shrink-0 w-24">
+                    <p className="text-xs font-bold text-[#2F4F3A]">{lecture.time || `${lecture.start_time} - ${lecture.end_time}`}</p>
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-semibold text-[#1a2e1e] truncate">{lecture.course_name || lecture.course}</p>
+                    <p className="text-xs text-[#7a6a55]">
+                      Class {lecture.class_id || 'All'} · Room {lecture.room || lecture.classroom}
+                      {lecture.batch ? ` · Batch ${lecture.batch}` : ''}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Badge variant="default">{lecture.session_kind ? lecture.session_kind.toUpperCase() : 'THEORY'}</Badge>
+                    <button
+                      onClick={() => onNavigate('faculty-attendance')}
+                      className="text-xs bg-[#2F4F3A] text-[#F4F1E6] px-3 py-1.5 rounded-lg font-medium hover:bg-[#243B2D] transition-colors"
+                    >
+                      Mark
+                    </button>
+                  </div>
+                </Card>
+              ))}
+            </div>
+          )}
         </div>
 
         {/* Attendance overview */}
         <div className="space-y-4">
-          <h3 className="text-base font-bold text-[#1a2e1e]">Attendance by Course</h3>
+          <h3 className="text-base font-bold text-[#1a2e1e]">Course Attendance Summary</h3>
           <Card className="p-5 space-y-3">
-            {ATTENDANCE_DATA.map(a => (
-              <div key={a.course}>
-                <div className="flex justify-between items-center mb-1">
-                  <p className="text-xs font-medium text-[#3a2e1a]">{a.course}</p>
-                  <p className="text-xs font-bold" style={{ color: a.percentage >= 75 ? '#2F4F3A' : a.percentage >= 65 ? '#9a6000' : '#b04040' }}>
-                    {a.percentage.toFixed(0)}%
-                  </p>
+            {courseAttendance.length === 0 ? (
+              <p className="text-xs text-[#7a6a55] text-center py-6">
+                No active attendance sessions recorded yet.
+              </p>
+            ) : (
+              courseAttendance.map(a => (
+                <div key={a.course_code}>
+                  <div className="flex justify-between items-center mb-1">
+                    <p className="text-xs font-medium text-[#3a2e1a]">{a.course_code}</p>
+                    <p className="text-xs font-bold" style={{ color: a.avg_attendance >= 75 ? '#2F4F3A' : '#b04040' }}>
+                      {Math.round(a.avg_attendance)}%
+                    </p>
+                  </div>
+                  <ProgressBar value={a.avg_attendance} />
                 </div>
-                <ProgressBar value={a.percentage} />
-              </div>
-            ))}
+              ))
+            )}
           </Card>
         </div>
       </div>
 
-      {/* My classes */}
+      {/* Defaulter preview */}
       <div>
         <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-bold text-[#1a2e1e]">My Classes</h3>
-          <button onClick={() => onNavigate('my-class')} className="text-xs text-[#2F4F3A] font-semibold hover:underline flex items-center gap-1">View all <ChevronRight size={13} /></button>
+          <h3 className="text-base font-bold text-[#1a2e1e]">Defaulter Overview</h3>
+          <button onClick={() => onNavigate('defaulters')} className="text-xs text-[#2F4F3A] font-semibold hover:underline flex items-center gap-1">
+            View all defaulters <ChevronRight size={13} />
+          </button>
         </div>
-        <div className="grid sm:grid-cols-3 gap-4">
-          {CLASSES.map(cls => (
-            <Card key={cls.name} className="p-5" onClick={() => onNavigate('my-class')}>
-              <div className="flex items-center justify-between mb-3">
-                <div className="w-10 h-10 rounded-xl bg-[#2F4F3A] flex items-center justify-center">
-                  <BookOpen size={16} className="text-[#E8D36A]" />
+        {defaultersList.length === 0 ? (
+          <Card className="p-6 text-center text-xs text-[#7a6a55]">
+            No attendance defaulters reported at this time.
+          </Card>
+        ) : (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {defaultersList.slice(0, 4).map(d => (
+              <Card key={d.student_id || d.name} className="p-4 border border-[#f0c8c8]">
+                <div className="flex justify-between items-start mb-2">
+                  <Badge variant="danger">Below 75%</Badge>
+                  <span className="text-xs font-bold text-[#b04040]">{Math.round(d.attendance)}%</span>
                 </div>
-                <span className="text-xs text-[#7a6a55]">{cls.students} students</span>
-              </div>
-              <h4 className="text-base font-bold text-[#1a2e1e]">{cls.name}</h4>
-              <p className="text-xs text-[#7a6a55]">Division {cls.division} · {cls.year}</p>
-              <div className="flex gap-1 mt-2 flex-wrap">
-                {cls.courses.map(c => <Badge key={c} variant="default">{c}</Badge>)}
-              </div>
-              <p className="text-xs text-[#7DB7C9] mt-3 flex items-center gap-1"><Clock size={11} />Next: {cls.nextLecture}</p>
-            </Card>
-          ))}
-        </div>
-      </div>
-
-      {/* Defaulters */}
-      <div>
-        <div className="flex items-center justify-between mb-4">
-          <h3 className="text-base font-bold text-[#1a2e1e]">Attendance Defaulters</h3>
-          <button onClick={() => onNavigate('defaulters')} className="text-xs text-[#2F4F3A] font-semibold hover:underline flex items-center gap-1">View all <ChevronRight size={13} /></button>
-        </div>
-        <Card className="overflow-hidden">
-          <table className="sc-table">
-            <thead><tr><th>Student</th><th>Class</th><th>Course</th><th>Attendance</th><th>Status</th></tr></thead>
-            <tbody>
-              {DEFAULTERS.map((d, i) => (
-                <tr key={i}>
-                  <td className="font-medium">{d.name}</td>
-                  <td>{d.class}</td>
-                  <td>{d.course}</td>
-                  <td>
-                    <div className="flex items-center gap-2">
-                      <span className="font-semibold text-sm" style={{ color: d.attendance < 65 ? '#b04040' : '#9a6000' }}>{d.attendance}%</span>
-                      <div className="w-16"><ProgressBar value={d.attendance} /></div>
-                    </div>
-                  </td>
-                  <td><Badge variant={d.status === 'Defaulter' ? 'danger' : 'warning'}>{d.status}</Badge></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </Card>
+                <p className="text-sm font-bold text-[#1a2e1e]">{d.name}</p>
+                <p className="text-xs text-[#7a6a55]">{d.class_id} · {d.course_code}</p>
+              </Card>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );

@@ -9,14 +9,17 @@ class User(Base):
     __tablename__ = "users"
 
     id = Column(String(50), primary_key=True, index=True)
-    name = Column(String(100), nullable=False)
+    name = Column(String(150), nullable=False)
+    full_name_raw = Column(String(150), nullable=True)
     email = Column(String(150), unique=True, index=True, nullable=False)
     password_hash = Column(String(255), nullable=False)
     salt = Column(String(64), nullable=False)
     role = Column(String(20), nullable=False, index=True) # student, faculty, admin, council
     is_hod = Column(Boolean, default=False)
+    initials = Column(String(10), nullable=True)
     department = Column(String(100), nullable=False)
-    class_id = Column(String(50), nullable=True) # e.g. SE-A
+    class_id = Column(String(50), nullable=True) # e.g. D12A
+    mobile = Column(String(30), nullable=True)
     avatar = Column(String(255), nullable=True)
     first_login = Column(Boolean, default=False)
     failed_login_attempts = Column(Integer, default=0)
@@ -26,19 +29,19 @@ class User(Base):
 class ClassModel(Base):
     __tablename__ = "classes"
 
-    id = Column(String(50), primary_key=True) # e.g. 'SE-A'
-    name = Column(String(100), nullable=False) # e.g. 'SE Computer Engineering - Div A'
+    id = Column(String(50), primary_key=True) # e.g. 'D12A'
+    name = Column(String(100), nullable=False) # e.g. 'D12A'
     department = Column(String(100), nullable=False)
     is_active = Column(Boolean, default=True)
 
 class CourseModel(Base):
     __tablename__ = "courses"
 
-    id = Column(String(50), primary_key=True) # e.g. 'CS301'
+    id = Column(String(50), primary_key=True) # e.g. 'CNS' or 'D12A'
     code = Column(String(20), nullable=False, unique=True)
     name = Column(String(150), nullable=False)
     department = Column(String(100), nullable=False)
-    credits = Column(Integer, default=3)
+    credits = Column(Integer, nullable=True, default=None)
     is_active = Column(Boolean, default=True)
 
 class ClassCourse(Base):
@@ -47,24 +50,28 @@ class ClassCourse(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     class_id = Column(String(50), ForeignKey("classes.id"), nullable=False)
     course_id = Column(String(50), ForeignKey("courses.id"), nullable=False)
-    faculty_id = Column(String(50), ForeignKey("users.id"), nullable=False)
+    faculty_id = Column(String(50), ForeignKey("users.id"), nullable=True)
+    batch = Column(String(10), nullable=True)
+    session_kind = Column(String(20), nullable=True, default="Theory")
 
 class StudentRecord(Base):
     __tablename__ = "students"
 
     id = Column(String(50), ForeignKey("users.id"), primary_key=True)
-    name = Column(String(100), nullable=False)
+    name = Column(String(150), nullable=False)
+    full_name_raw = Column(String(150), nullable=True)
     roll_no = Column(String(50), nullable=False)
     class_id = Column(String(50), ForeignKey("classes.id"), nullable=False)
+    mobile = Column(String(30), nullable=True)
 
 class Classroom(Base):
     __tablename__ = "classrooms"
 
     id = Column(String(50), primary_key=True)
-    name = Column(String(50), nullable=False, unique=True) # 'A-101'
-    building = Column(String(50), nullable=False)
-    capacity = Column(Integer, default=60)
-    facilities_json = Column(Text, default="[]")
+    name = Column(String(50), nullable=False, unique=True)
+    building = Column(String(50), nullable=True)
+    capacity = Column(Integer, nullable=True)
+    facilities_json = Column(Text, default="[]", nullable=True)
 
 class Lecture(Base):
     __tablename__ = "lectures"
@@ -114,17 +121,24 @@ class TimetableEntry(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     day_of_week = Column(String(20), nullable=False) # Monday, Tuesday, etc.
-    time = Column(String(30), nullable=False) # e.g. 09:00–10:00
+    time = Column(String(30), nullable=False) # e.g. 08:30–09:30
     start_time = Column(String(10), nullable=False)
     end_time = Column(String(10), nullable=False)
     class_id = Column(String(50), ForeignKey("classes.id"), nullable=False)
     course_id = Column(String(50), ForeignKey("courses.id"), nullable=False)
     course_name = Column(String(150), nullable=False)
     course_code = Column(String(20), nullable=False)
-    faculty_id = Column(String(50), ForeignKey("users.id"), nullable=False)
-    faculty_name = Column(String(100), nullable=False)
-    classroom = Column(String(50), nullable=False)
+    faculty_id = Column(String(50), ForeignKey("users.id"), nullable=True)
+    faculty_name = Column(String(100), nullable=True)
+    faculty_initials = Column(String(10), nullable=True)
+    classroom = Column(String(50), nullable=True)
+    batch = Column(String(10), nullable=True) # A, B, C or None
+    session_kind = Column(String(20), default="Theory") # Theory, Practical, Project
+    group_id = Column(String(50), nullable=True)
+    is_ambiguous = Column(Boolean, default=False)
+    source_ref = Column(String(50), nullable=True)
     lecture_type = Column(String(20), default="Regular")
+
 
 class StudyMaterial(Base):
     __tablename__ = "study_materials"

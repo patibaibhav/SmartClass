@@ -1,63 +1,124 @@
-import React, { useState } from 'react';
-import { Users, BookOpen, ChevronRight, Clock } from 'lucide-react';
-import { Card, Badge, Tabs, SectionHeader, ProgressBar } from '../components/ui';
-import { STUDENTS, COURSES, ATTENDANCE_DATA } from '../data/mock';
+import React, { useState, useEffect } from 'react';
+import { BookOpen, Users, Phone, Shield } from 'lucide-react';
+import { Card, Badge, Tabs, SectionHeader, EmptyState } from '../components/ui';
+import { api } from '../services/api';
 
 interface Props {
   role?: string;
   onNavigate?: (page: string) => void;
 }
 
-const CLASSES = [
-  { name: 'SE-A', division: 'A', year: 'Second Year', dept: 'Computer Science', students: 62, courses: ['CS301', 'CS302', 'CS303', 'CS304', 'CS305'], nextLecture: '09:00 — Data Structures' },
-  { name: 'SE-B', division: 'B', year: 'Second Year', dept: 'Computer Science', students: 58, courses: ['CS302'], nextLecture: '11:15 — Database Systems' },
-];
+interface ClassCourse {
+  code: string;
+  name: string;
+  credits: number | null;
+  faculty: string | null;
+  sessionKind?: string | null;
+  batch?: string | null;
+}
+
+interface StudentItem {
+  id: string;
+  name: string;
+  rollNo: string;
+  mobile?: string | null;
+}
+
+interface ClassData {
+  class: {
+    id: string;
+    name: string;
+    year: string;
+    department: string;
+  };
+  courses: ClassCourse[];
+  students: StudentItem[];
+  availableClasses?: string[];
+}
 
 export default function MyClassPage({ role = 'student', onNavigate }: Props) {
-  const [selectedClass, setSelectedClass] = useState<string | null>(role === 'student' ? 'SE-A' : null);
+  const [classData, setClassData] = useState<ClassData | null>(null);
+  const [selectedClassId, setSelectedClassId] = useState<string | undefined>(undefined);
   const [activeTab, setActiveTab] = useState('Overview');
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
-  if (!selectedClass) {
+  useEffect(() => {
+    let isMounted = true;
+    setLoading(true);
+    setError(null);
+
+    api.getMyClass(selectedClassId)
+      .then(res => {
+        if (!isMounted) return;
+        if (res && res.class) {
+          setClassData(res);
+        } else {
+          setError('Failed to load class information.');
+        }
+      })
+      .catch(err => {
+        if (isMounted) setError(err.message || 'Error fetching class');
+      })
+      .finally(() => {
+        if (isMounted) setLoading(false);
+      });
+
+    return () => { isMounted = false; };
+  }, [selectedClassId]);
+
+  const tabs = role === 'student'
+    ? ['Overview', 'Courses', 'Class Roster']
+    : ['Overview', 'Courses', 'Students'];
+
+  if (loading) {
     return (
-      <div className="p-6 max-w-4xl mx-auto space-y-5">
-        <SectionHeader title="My Classes" sub="Classes assigned to you this semester" />
-        <div className="grid sm:grid-cols-2 gap-4">
-          {CLASSES.map(cls => (
-            <Card key={cls.name} className="p-5" onClick={() => setSelectedClass(cls.name)}>
-              <div className="flex items-start justify-between mb-4">
-                <div className="w-10 h-10 rounded-xl bg-[#2F4F3A] flex items-center justify-center">
-                  <BookOpen size={16} className="text-[#E8D36A]" />
-                </div>
-                <span className="text-xs font-semibold text-[#7a6a55] bg-[#E8E2D0] px-2 py-1 rounded-lg">{cls.students} students</span>
-              </div>
-              <h3 className="text-lg font-bold text-[#1a2e1e]">{cls.name}</h3>
-              <p className="text-sm text-[#7a6a55]">Division {cls.division} · {cls.year} · {cls.dept}</p>
-              <div className="flex gap-1.5 flex-wrap mt-3">
-                {cls.courses.map(c => <Badge key={c} variant="default">{c}</Badge>)}
-              </div>
-              <p className="text-xs text-[#7DB7C9] mt-3 flex items-center gap-1"><Clock size={11} />Next: {cls.nextLecture}</p>
-            </Card>
-          ))}
-        </div>
+      <div className="p-6 max-w-5xl mx-auto">
+        <SectionHeader title="My Class" sub="Loading class details..." />
+        <div className="py-12 text-center text-[#7a6a55]">Loading class data...</div>
       </div>
     );
   }
 
-  const cls = CLASSES.find(c => c.name === selectedClass) || CLASSES[0];
-  const tabs = role === 'student'
-    ? ['Overview', 'Courses', 'Attendance']
-    : ['Overview', 'Courses', 'Attendance', 'Students'];
+  if (error || !classData) {
+    return (
+      <div className="p-6 max-w-5xl mx-auto space-y-5">
+        <SectionHeader title="My Class" sub="Class information" />
+        <Card className="p-8 text-center">
+          <p className="text-sm text-[#b04040]">{error || 'No class found.'}</p>
+        </Card>
+      </div>
+    );
+  }
+
+  const cls = classData.class;
+  const availableClasses = classData.availableClasses || ['D12A', 'D12B', 'D12C'];
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-5">
-      <div className="flex items-center gap-3">
-        {role !== 'student' && (
-          <button onClick={() => setSelectedClass(null)} className="text-sm text-[#2F4F3A] font-semibold hover:underline">← My Classes</button>
-        )}
-        <div className="flex-1">
-          <h2 className="text-xl font-bold text-[#1a2e1e]">{cls.name}</h2>
-          <p className="text-sm text-[#7a6a55]">Division {cls.division} · {cls.year} · {cls.dept}</p>
+      <div className="flex items-center justify-between flex-wrap gap-4">
+        <div>
+          <h2 className="text-2xl font-bold text-[#1a2e1e]">{cls.name}</h2>
+          <p className="text-sm text-[#7a6a55]">{cls.year} · {cls.department}</p>
         </div>
+
+        {role !== 'student' && availableClasses.length > 1 && (
+          <div className="flex gap-2">
+            {availableClasses.map(cId => (
+              <button
+                key={cId}
+                onClick={() => setSelectedClassId(cId)}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+                  (selectedClassId || cls.id) === cId
+                    ? 'bg-[#2F4F3A] text-[#F4F1E6]'
+                    : 'bg-[#E8E2D0] text-[#5a4a35] hover:bg-[#ddd7c0]'
+                }`}
+              >
+                {cId}
+              </button>
+            ))}
+          </div>
+        )}
       </div>
 
       <Tabs tabs={tabs} active={activeTab} onChange={setActiveTab} />
@@ -68,12 +129,12 @@ export default function MyClassPage({ role = 'student', onNavigate }: Props) {
             <h4 className="text-sm font-bold text-[#1a2e1e]">Class Information</h4>
             <div className="grid grid-cols-2 gap-3 text-sm">
               {[
-                { label: 'Class', value: cls.name },
-                { label: 'Division', value: cls.division },
+                { label: 'Class ID', value: cls.id },
+                { label: 'Year', value: cls.year },
+                { label: 'Department', value: cls.department },
+                { label: 'Enrolled Students', value: classData.students.length },
+                { label: 'Active Courses', value: classData.courses.length },
                 { label: 'Academic Year', value: '2024–25' },
-                { label: 'Department', value: cls.dept },
-                { label: 'Students', value: cls.students },
-                { label: 'Courses', value: cls.courses.length },
               ].map(item => (
                 <div key={item.label} className="bg-[#F4F1E6] rounded-xl p-3">
                   <p className="text-xs text-[#7a6a55]">{item.label}</p>
@@ -82,13 +143,24 @@ export default function MyClassPage({ role = 'student', onNavigate }: Props) {
               ))}
             </div>
           </Card>
+
           <Card className="p-5">
-            <h4 className="text-sm font-bold text-[#1a2e1e] mb-3">Quick Stats</h4>
-            <div className="space-y-3">
-              <div className="flex justify-between"><span className="text-sm text-[#7a6a55]">Avg Attendance</span><span className="font-bold text-[#2F4F3A]">82%</span></div>
-              <div className="flex justify-between"><span className="text-sm text-[#7a6a55]">Active Assignments</span><span className="font-bold text-[#1a2e1e]">4</span></div>
-              <div className="flex justify-between"><span className="text-sm text-[#7a6a55]">Active Quizzes</span><span className="font-bold text-[#1a2e1e]">1</span></div>
-              <div className="flex justify-between"><span className="text-sm text-[#7a6a55]">Next Lecture</span><span className="font-bold text-[#7DB7C9] text-xs">09:00 Today</span></div>
+            <h4 className="text-sm font-bold text-[#1a2e1e] mb-3">Class Summary</h4>
+            <div className="space-y-3 text-sm">
+              <div className="flex justify-between items-center">
+                <span className="text-[#7a6a55]">Total Students</span>
+                <span className="font-bold text-[#2F4F3A]">{classData.students.length}</span>
+              </div>
+              <div className="flex justify-between items-center">
+                <span className="text-[#7a6a55]">Total Subjects</span>
+                <span className="font-bold text-[#1a2e1e]">{classData.courses.length}</span>
+              </div>
+              <div className="pt-3 border-t border-[#E8E2D0] text-xs text-[#7a6a55]">
+                <div className="flex items-center gap-1.5 text-[#2F4F3A]">
+                  <Shield size={14} />
+                  <span>Privacy protected roster</span>
+                </div>
+              </div>
             </div>
           </Card>
         </div>
@@ -96,61 +168,68 @@ export default function MyClassPage({ role = 'student', onNavigate }: Props) {
 
       {activeTab === 'Courses' && (
         <div className="grid sm:grid-cols-2 gap-4">
-          {COURSES.filter(c => cls.courses.includes(c.code)).map(course => (
-            <Card key={course.id} className="p-5">
-              <div className="flex items-start justify-between mb-2">
-                <Badge variant="default">{course.code}</Badge>
-                <span className="text-xs text-[#7a6a55]">{course.credits} credits</span>
-              </div>
-              <p className="text-sm font-bold text-[#1a2e1e]">{course.name}</p>
-              <p className="text-xs text-[#7a6a55] mt-1">{course.faculty}</p>
-            </Card>
-          ))}
+          {classData.courses.length === 0 ? (
+            <div className="col-span-2">
+              <EmptyState title="No courses assigned" description="No course allocations found for this class." />
+            </div>
+          ) : (
+            classData.courses.map((course, idx) => (
+              <Card key={`${course.code}-${idx}`} className="p-5 space-y-2">
+                <div className="flex items-start justify-between">
+                  <Badge variant="default">{course.code}</Badge>
+                  {course.credits !== null && (
+                    <span className="text-xs text-[#7a6a55]">{course.credits} credits</span>
+                  )}
+                </div>
+                <p className="text-base font-bold text-[#1a2e1e]">{course.name}</p>
+                <div className="text-xs text-[#7a6a55] space-y-1">
+                  {course.faculty && <p>Faculty: <span className="font-medium text-[#1a2e1e]">{course.faculty}</span></p>}
+                  {course.sessionKind && (
+                    <p>Type: <span className="capitalize font-medium text-[#1a2e1e]">{course.sessionKind}</span>{course.batch ? ` (Batch ${course.batch})` : ''}</p>
+                  )}
+                </div>
+              </Card>
+            ))
+          )}
         </div>
       )}
 
-      {activeTab === 'Attendance' && (
-        <div className="space-y-3">
-          {ATTENDANCE_DATA.map(a => (
-            <Card key={a.course} className="p-4 flex items-center gap-4">
-              <div className="flex-1">
-                <p className="text-sm font-semibold text-[#1a2e1e]">{a.name}</p>
-                <p className="text-xs text-[#7a6a55]">{a.present}/{a.total} lectures</p>
-              </div>
-              <div className="w-32">
-                <ProgressBar value={a.percentage} />
-              </div>
-              <span className="font-bold text-sm w-12 text-right" style={{ color: a.percentage >= 75 ? '#2F4F3A' : '#b04040' }}>
-                {a.percentage.toFixed(0)}%
-              </span>
-            </Card>
-          ))}
-        </div>
-      )}
-
-      {activeTab === 'Students' && role !== 'student' && (
+      {(activeTab === 'Students' || activeTab === 'Class Roster') && (
         <Card className="overflow-hidden">
-          <table className="sc-table">
-            <thead><tr><th>Student</th><th>Roll No.</th><th>Attendance</th></tr></thead>
-            <tbody>
-              {STUDENTS.map((s, i) => {
-                const att = 60 + Math.floor(Math.random() * 35);
-                return (
+          <div className="p-4 bg-[#F5EBD7] border-b border-[#E8E2D0] flex items-center justify-between">
+            <h4 className="text-sm font-bold text-[#1a2e1e]">Class Roster ({classData.students.length} Students)</h4>
+            <span className="text-xs text-[#7a6a55]">Sorted by Roll Number</span>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="sc-table w-full">
+              <thead>
+                <tr>
+                  <th className="w-20">Roll No.</th>
+                  <th>Student Name</th>
+                  <th>Student ID</th>
+                  <th>Mobile</th>
+                </tr>
+              </thead>
+              <tbody>
+                {classData.students.map((s) => (
                   <tr key={s.id}>
-                    <td className="font-medium">{s.name}</td>
-                    <td>{s.rollNo}</td>
+                    <td className="font-bold text-[#2F4F3A]">{s.rollNo}</td>
+                    <td className="font-medium text-[#1a2e1e]">{s.name}</td>
+                    <td className="text-xs text-[#7a6a55]">{s.id}</td>
                     <td>
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm font-semibold" style={{ color: att >= 75 ? '#2F4F3A' : '#b04040' }}>{att}%</span>
-                        <div className="w-20"><ProgressBar value={att} /></div>
-                        {att < 75 && <Badge variant={att < 65 ? 'danger' : 'warning'}>{att < 65 ? 'Defaulter' : 'Warning'}</Badge>}
-                      </div>
+                      {s.mobile ? (
+                        <span className="text-xs flex items-center gap-1 text-[#1a2e1e]">
+                          <Phone size={12} className="text-[#2F4F3A]" /> {s.mobile}
+                        </span>
+                      ) : (
+                        <span className="text-xs text-[#9a8a75] italic">Hidden for privacy</span>
+                      )}
                     </td>
                   </tr>
-                );
-              })}
-            </tbody>
-          </table>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </Card>
       )}
     </div>
