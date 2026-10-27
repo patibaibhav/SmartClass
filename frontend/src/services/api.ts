@@ -1,107 +1,133 @@
-const API_BASE = 'http://127.0.0.1:8000/api';
+import type { User } from '../types';
+
+const configuredBase = import.meta.env.VITE_API_BASE_URL?.trim().replace(/\/$/, '');
+
+if (import.meta.env.PROD && !configuredBase) {
+  throw new Error('VITE_API_BASE_URL is required for production builds.');
+}
+if (import.meta.env.PROD && configuredBase && !configuredBase.startsWith('https://')) {
+  throw new Error('VITE_API_BASE_URL must use HTTPS in production.');
+}
+
+const API_BASE = configuredBase || 'http://127.0.0.1:8000/api';
 
 export interface AuthResponse {
   phase: 'login' | 'first-login';
   token?: string;
-  user: any;
+  user: User;
   message?: string;
 }
 
+interface RequestOptions extends RequestInit {
+  authenticated?: boolean;
+}
+
+function getToken() {
+  return sessionStorage.getItem('smartclass_token') || localStorage.getItem('smartclass_token');
+}
+
+function clearToken() {
+  sessionStorage.removeItem('smartclass_token');
+  localStorage.removeItem('smartclass_token');
+}
+
+function saveToken(token: string, remember: boolean) {
+  clearToken();
+  const storage = remember ? localStorage : sessionStorage;
+  storage.setItem('smartclass_token', token);
+}
+
+function replaceToken(token: string) {
+  const remembered = localStorage.getItem('smartclass_token') !== null;
+  saveToken(token, remembered);
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const { authenticated = true, headers, ...fetchOptions } = options;
+  const token = getToken();
+  if (authenticated && !token) {
+    throw new Error('Your session has expired. Please sign in again.');
+  }
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...fetchOptions,
+    headers: {
+      ...(fetchOptions.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(authenticated && token ? { Authorization: `Bearer ${token}` } : {}),
+      ...headers,
+    },
+  });
+  let data: any = null;
+  try {
+    data = await response.json();
+  } catch {
+    // A non-JSON response is handled by the generic message below.
+  }
+  if (!response.ok) {
+    if (response.status === 401 && authenticated) clearToken();
+    throw new Error(data?.detail || `Request failed (${response.status}).`);
+  }
+  return data as T;
+}
+
 export const api = {
-  // Auth
-  async login(userId: string, password: string): Promise<AuthResponse> {
-    try {
-      const res = await fetch(`${API_BASE}/auth/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ user_id: userId, password })
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || 'Invalid User ID or password. Please try again.');
-      }
-      if (data.token) {
-        localStorage.setItem('smartclass_token', data.token);
-      }
-      return data;
-    } catch (err: any) {
-      throw err;
-    }
+  async login(userId: string, password: string, remember = false): Promise<AuthResponse> {
+    const data = await request<AuthResponse>('/auth/login', {
+      method: 'POST',
+      authenticated: false,
+      body: JSON.stringify({ user_id: userId, password, remember }),
+    });
+    if (data.token) saveToken(data.token, remember);
+    return data;
   },
 
-  async firstLogin(userId: string, newPass: string, confirmPass: string) {
-    const res = await fetch(`${API_BASE}/auth/first-login`, {
+  async firstLogin(newPass: string, confirmPass: string) {
+    const data = await request<{ token: string; user: User }>('/auth/first-login', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_id: userId,
-        new_password: newPass,
-        confirm_password: confirmPass
-      })
+      body: JSON.stringify({ new_password: newPass, confirm_password: confirmPass }),
     });
-    const data = await res.json();
-    if (!res.ok) {
-      throw new Error(data.detail || 'Failed to update password');
-    }
-    if (data.token) {
-      localStorage.setItem('smartclass_token', data.token);
-    }
+    replaceToken(data.token);
     return data;
+  },
+
+  async me() {
+    return request<User>('/auth/me');
+  },
+
+  async logout() {
+    try {
+      return await request<{ message: string }>('/auth/logout', { method: 'POST' });
+    } finally {
+      clearToken();
+    }
   },
 
   async changePassword(currentPass: string, newPass: string, confirmPass: string) {
-    const token = localStorage.getItem('smartclass_token');
-    const res = await fetch(`${API_BASE}/auth/change-password`, {
+    const data = await request<{ message: string }>('/auth/change-password', {
       method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${token}`
-      },
       body: JSON.stringify({
         current_password: currentPass,
         new_password: newPass,
-        confirm_password: confirmPass
-      })
+        confirm_password: confirmPass,
+      }),
     });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.detail || 'Failed to change password');
+    clearToken();
     return data;
   },
 
-  // Classrooms & Availability
-  async getClassrooms() {
-    try {
-      const res = await fetch(`${API_BASE}/classrooms`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getClassrooms: () => request<any[]>('/classrooms'),
+  getCourses: () => request<any[]>('/academic/courses'),
+  getMyClass: () => request<any>('/academic/my-class'),
 
-  async searchClassroomAvailability(date: string, startTime: string, endTime: string) {
-    try {
-      const res = await fetch(`${API_BASE}/classrooms/search-availability`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ date, start_time: startTime, end_time: endTime })
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  searchClassroomAvailability: (date: string, startTime: string, endTime: string) =>
+    request<any>('/classrooms/search-availability', {
+      method: 'POST',
+      body: JSON.stringify({ date, start_time: startTime, end_time: endTime }),
+    }),
 
-  // Timetable
-  async getTimetable() {
-    try {
-      const res = await fetch(`${API_BASE}/timetable`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getTimetable: (day?: string) =>
+    request<Record<string, any[]>>(`/timetable${day ? `?day=${encodeURIComponent(day)}` : ''}`),
 
-  async checkTimetableConflict(params: {
+  checkTimetableConflict(params: {
     day: string;
     startTime: string;
     endTime: string;
@@ -109,346 +135,86 @@ export const api = {
     facultyId: string;
     classId: string;
   }) {
-    try {
-      const qs = new URLSearchParams({
-        day: params.day,
-        start_time: params.startTime,
-        end_time: params.endTime,
-        classroom: params.classroom,
-        faculty_id: params.facultyId,
-        class_id: params.classId
-      });
-      const res = await fetch(`${API_BASE}/timetable/check-conflict?${qs.toString()}`, { method: 'POST' });
-      return await res.json();
-    } catch {
-      return null;
-    }
+    const query = new URLSearchParams({
+      day: params.day,
+      start_time: params.startTime,
+      end_time: params.endTime,
+      classroom: params.classroom,
+      faculty_id: params.facultyId,
+      class_id: params.classId,
+    });
+    return request<any>(`/timetable/check-conflict?${query}`, { method: 'POST' });
   },
 
-  // Attendance & Lectures
-  async getStudentAttendance() {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/attendance/student`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getStudentAttendance: () => request<any>('/attendance/student'),
+  getFacultyAttendance: () => request<any>('/attendance/faculty'),
+  getMaterials: (courseId?: string) =>
+    request<any[]>(`/materials${courseId ? `?course_id=${encodeURIComponent(courseId)}` : ''}`),
 
-  async getFacultyAttendance() {
-    try {
-      const res = await fetch(`${API_BASE}/attendance/faculty`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  createLecture: (lectureData: any) =>
+    request<any>('/lectures/create', { method: 'POST', body: JSON.stringify(lectureData) }),
 
-  async createLecture(lectureData: any) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/lectures/create`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify(lectureData)
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  markAttendance: (lectureId: number, attendance: { student_id: string; status: string }[]) =>
+    request<any>('/attendance/mark', {
+      method: 'POST',
+      body: JSON.stringify({ lecture_id: lectureId, attendance }),
+    }),
 
-  async markAttendance(lectureId: number, attendanceList: { student_id: string; status: string }[]) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/attendance/mark`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ lecture_id: lectureId, attendance: attendanceList })
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getAssignments: () => request<any[]>('/assignments'),
 
-  // Assignments
-  async getAssignments() {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/assignments`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  submitAssignment: (assignmentId: string, submissionFile: string) =>
+    request<any>(`/assignments/${assignmentId}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ submission_file: submissionFile }),
+    }),
 
-  async submitAssignment(assignmentId: string, submissionFile: string) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/assignments/${assignmentId}/submit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ submission_file: submissionFile })
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getQuizzes: () => request<any[]>('/quizzes'),
+  getQuizQuestions: (quizId: string) => request<any[]>(`/quizzes/${quizId}/questions`),
+  submitQuiz: (quizId: string, answers: Record<string, number>) =>
+    request<any>(`/quizzes/${quizId}/submit`, {
+      method: 'POST',
+      body: JSON.stringify({ answers }),
+    }),
+  getAIReport: (quizId: string) => request<any>(`/ai-report/${quizId}`),
+  getResults: () => request<any[]>('/results'),
+  getPerformanceInsights: (courseId?: string) =>
+    request<any>(`/performance-insights${courseId ? `?course_id=${encodeURIComponent(courseId)}` : ''}`),
 
-  // Quizzes & AI Report
-  async getQuizzes() {
-    try {
-      const res = await fetch(`${API_BASE}/quizzes`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getAnnouncements: () => request<any[]>('/announcements'),
+  createAnnouncement: (data: { title: string; content: string; audience: string; type: string }) =>
+    request<any>('/announcements', { method: 'POST', body: JSON.stringify(data) }),
+  getNotifications: () => request<any[]>('/notifications'),
+  markNotificationRead: (id: string) => request<any>(`/notifications/${id}/read`, { method: 'POST' }),
 
-  async getQuizQuestions(quizId: string) {
-    try {
-      const res = await fetch(`${API_BASE}/quizzes/${quizId}/questions`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getCalendar: (category?: string) =>
+    request<any[]>(`/calendar${category && category !== 'All' ? `?category=${encodeURIComponent(category)}` : ''}`),
+  getEvents: () => request<any[]>('/events'),
+  createEvent: (eventData: any) =>
+    request<any>('/events', { method: 'POST', body: JSON.stringify(eventData) }),
 
-  async submitQuiz(quizId: string, answers: Record<string, number>) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/quizzes/${quizId}/submit`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ answers })
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getForums: (courseCode?: string) =>
+    request<any[]>(`/forums${courseCode ? `?course_code=${encodeURIComponent(courseCode)}` : ''}`),
+  createForumTopic: (courseId: string, title: string, content: string) =>
+    request<any>('/forums', {
+      method: 'POST',
+      body: JSON.stringify({ course_id: courseId, title, content }),
+    }),
+  getForumReplies: (topicId: string) => request<any[]>(`/forums/${topicId}/replies`),
+  postForumReply: (topicId: string, content: string) =>
+    request<any>(`/forums/${topicId}/replies`, { method: 'POST', body: JSON.stringify({ content }) }),
 
-  async getAIReport(quizId: string) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/ai-report/${quizId}`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
+  getGrievances: () => request<any[]>('/grievances'),
+  submitGrievance: (subject: string, category: string, description: string) =>
+    request<any>('/grievances', {
+      method: 'POST',
+      body: JSON.stringify({ subject, category, description }),
+    }),
+  updateGrievance: (id: string, status: string, resolution?: string) =>
+    request<any>(`/grievances/${id}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status, resolution }),
+    }),
 
-  // Announcements & Notifications
-  async getAnnouncements() {
-    try {
-      const res = await fetch(`${API_BASE}/announcements`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async createAnnouncement(data: { title: string; content: string; audience: string; type: string }) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/announcements`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify(data)
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async getNotifications() {
-    try {
-      const res = await fetch(`${API_BASE}/notifications`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async markNotificationRead(id: string) {
-    try {
-      const res = await fetch(`${API_BASE}/notifications/${id}/read`, { method: 'POST' });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  // Events & Calendar
-  async getCalendar(category?: string) {
-    try {
-      const url = category && category !== 'All' ? `${API_BASE}/calendar?category=${category}` : `${API_BASE}/calendar`;
-      const res = await fetch(url);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async getEvents() {
-    try {
-      const res = await fetch(`${API_BASE}/events`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async createEvent(eventData: any) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/events`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify(eventData)
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  // Forums
-  async getForums(courseCode?: string) {
-    try {
-      const url = courseCode ? `${API_BASE}/forums?course_code=${courseCode}` : `${API_BASE}/forums`;
-      const res = await fetch(url);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async createForumTopic(courseId: string, title: string, content: string) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/forums`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ course_id: courseId, title, content })
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async getForumReplies(topicId: string) {
-    try {
-      const res = await fetch(`${API_BASE}/forums/${topicId}/replies`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async postForumReply(topicId: string, content: string) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/forums/${topicId}/replies`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ content })
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  // Grievances
-  async getGrievances() {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/grievances`, {
-        headers: token ? { 'Authorization': `Bearer ${token}` } : {}
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async submitGrievance(subject: string, category: string, description: string) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/grievances`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ subject, category, description })
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  async updateGrievance(id: string, status: string, resolution?: string) {
-    try {
-      const token = localStorage.getItem('smartclass_token');
-      const res = await fetch(`${API_BASE}/grievances/${id}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          ...(token ? { 'Authorization': `Bearer ${token}` } : {})
-        },
-        body: JSON.stringify({ status, resolution })
-      });
-      return await res.json();
-    } catch {
-      return null;
-    }
-  },
-
-  // Dashboard Stats
-  async getDashboardStats(role: string) {
-    try {
-      const res = await fetch(`${API_BASE}/dashboard/stats?role=${role}`);
-      return await res.json();
-    } catch {
-      return null;
-    }
-  }
+  getDashboardStats: (role: string) =>
+    request<any>(`/dashboard/stats?role=${encodeURIComponent(role)}`),
 };

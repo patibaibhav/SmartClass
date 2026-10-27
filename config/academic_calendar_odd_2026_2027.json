@@ -1,0 +1,31 @@
+{
+  "source": "Copy of FINAL_Student_ Acad Cale_ODD sem_ 26-27_B.E.pdf",
+  "term": {
+    "start": "2026-08-03",
+    "last_instruction_day": "2026-11-18"
+  },
+  "entries": [
+    {"title": "Beginning of UG term", "category": "Events", "start": "2026-08-03", "end": "2026-08-03", "description": "Academic Calendar 2026-27"},
+    {"title": "Class Council Election", "category": "Events", "start": "2026-08-06", "end": "2026-08-07"},
+    {"title": "College Council Election", "category": "Events", "start": "2026-08-14", "end": "2026-08-14"},
+    {"title": "Society Council Interview", "category": "Events", "start": "2026-08-17", "end": "2026-08-17"},
+    {"title": "Anti-Ragging Week", "category": "Events", "start": "2026-08-24", "end": "2026-08-29"},
+    {"title": "Teachers' Day Celebrations", "category": "Events", "start": "2026-09-03", "end": "2026-09-05"},
+    {"title": "Mid-Semester Break (Ganpati Chaturthi)", "category": "Holidays", "start": "2026-09-14", "end": "2026-09-18"},
+    {"title": "Mid-Term and MEA Tests", "category": "Tests", "start": "2026-09-28", "end": "2026-10-03"},
+    {"title": "Open Day for Mid-Term", "category": "Events", "start": "2026-10-13", "end": "2026-10-13"},
+    {"title": "Re-Mid-Term Tests", "category": "Tests", "start": "2026-11-02", "end": "2026-11-07"},
+    {"title": "Term End and Last Instruction Day", "category": "Events", "start": "2026-11-18", "end": "2026-11-18"},
+    {"title": "Submissions, Oral and Practical Exams", "category": "Tests", "start": "2026-11-19", "end": "2026-11-27"},
+    {"title": "End-Semester Examination", "category": "Tests", "start": "2026-12-07", "end": "2026-12-22"},
+    {"title": "Re-exam Form Acceptance", "category": "Events", "start": "2027-01-11", "end": "2027-01-11"},
+    {"title": "Open Day", "category": "Events", "start": "2027-01-11", "end": "2027-01-14"},
+    {"title": "Final Result", "category": "Events", "start": "2027-01-22", "end": "2027-01-22"},
+    {"title": "Re-evaluation Form Acceptance", "category": "Events", "start": "2027-01-25", "end": "2027-01-29"},
+    {"title": "Re-exam for End-Semester Examination", "category": "Tests", "start": "2027-01-28", "end": "2027-02-04"},
+    {"title": "Commencement of New Term", "category": "Events", "start": "2027-02-01", "end": "2027-02-01"},
+    {"title": "Revaluation Result", "category": "Events", "start": "2027-02-17", "end": "2027-02-17"},
+    {"title": "Result of Re-exam", "category": "Events", "start": "2027-02-18", "end": "2027-02-18"},
+    {"title": "Open Day of Re-exam", "category": "Events", "start": "2027-02-20", "end": "2027-02-20"}
+  ]
+}

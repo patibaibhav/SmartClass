@@ -1,7 +1,7 @@
 import React, { useState } from 'react';
 import { Eye, EyeOff, Bell, LogOut, Shield } from 'lucide-react';
 import { Card, Button, SectionHeader, Badge, Avatar, Toast } from '../components/ui';
-import type { User } from '../data/mock';
+import type { User } from '../types';
 
 interface Props {
   user: User;

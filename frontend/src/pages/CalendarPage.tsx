@@ -1,175 +1,146 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, MapPin, Clock, ExternalLink } from 'lucide-react';
 import { Card, Badge, SectionHeader, Modal, Button } from '../components/ui';
-import { EVENTS } from '../data/mock';
+import { api } from '../services/api';
 
-const MONTH_DAYS = 31;
 const WEEK_DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-type CalView = 'month' | 'week' | 'day';
+interface CalendarEntry {
+  id: number;
+  title: string;
+  category: 'Events' | 'Tests' | 'Holidays';
+  date: string;
+  time?: string | null;
+  description?: string | null;
+}
 
-const CALENDAR_EVENTS = [
-  { date: 14, type: 'test', label: 'DBMS Quiz', color: '#7DB7C9' },
-  { date: 18, type: 'event', label: 'Chess Championship', color: '#2F4F3A' },
-  { date: 20, type: 'test', label: 'DSA Test', color: '#7DB7C9' },
-  { date: 25, type: 'event', label: 'TechSpark 2024', color: '#2F4F3A' },
-  { date: 28, type: 'holiday', label: 'Independence Day Obs.', color: '#E8D36A' },
-];
+interface CouncilEvent {
+  id: string;
+  title: string;
+  council: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  venue: string;
+  description: string;
+  organizer: string;
+  registrationLink?: string | null;
+  visibility: string;
+}
+
+const CATEGORY_COLORS = { Events: '#2F4F3A', Tests: '#7DB7C9', Holidays: '#E8D36A' };
 
 export default function CalendarPage() {
-  const [view, setView] = useState<CalView>('month');
-  const [selectedEvent, setSelectedEvent] = useState<typeof EVENTS[0] | null>(null);
+  const today = new Date();
+  const [visibleMonth, setVisibleMonth] = useState(new Date(today.getFullYear(), today.getMonth(), 1));
+  const [entries, setEntries] = useState<CalendarEntry[]>([]);
+  const [events, setEvents] = useState<CouncilEvent[]>([]);
+  const [selectedEvent, setSelectedEvent] = useState<CouncilEvent | null>(null);
   const [filter, setFilter] = useState<string[]>(['Events', 'Tests', 'Holidays']);
-  const currentMonth = 'August 2024';
+  const [error, setError] = useState('');
 
-  function toggleFilter(f: string) {
-    setFilter(prev => prev.includes(f) ? prev.filter(x => x !== f) : [...prev, f]);
+  useEffect(() => {
+    Promise.all([api.getCalendar(), api.getEvents()])
+      .then(([calendarEntries, councilEvents]) => {
+        setEntries(calendarEntries);
+        setEvents(councilEvents);
+      })
+      .catch(err => setError(err.message || 'Unable to load the calendar.'));
+  }, []);
+
+  const year = visibleMonth.getFullYear();
+  const month = visibleMonth.getMonth();
+  const monthDays = new Date(year, month + 1, 0).getDate();
+  const firstDay = new Date(year, month, 1).getDay();
+  const monthEntries = useMemo(() => entries.filter(entry => {
+    const parsed = new Date(`${entry.date}T00:00:00`);
+    return parsed.getFullYear() === year && parsed.getMonth() === month && filter.includes(entry.category);
+  }), [entries, filter, month, year]);
+
+  function toggleFilter(category: string) {
+    setFilter(current => current.includes(category) ? current.filter(item => item !== category) : [...current, category]);
   }
 
-  const firstDay = 4; // August 2024 starts on Thursday (index 4)
+  function moveMonth(offset: number) {
+    setVisibleMonth(current => new Date(current.getFullYear(), current.getMonth() + offset, 1));
+  }
 
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-5">
-      <div className="flex items-center justify-between flex-wrap gap-3">
-        <SectionHeader title="Calendar" sub="Academic events, tests, and holidays" />
-        <div className="flex gap-1 bg-[#E8E2D0] rounded-xl p-1">
-          {(['month', 'week', 'day'] as CalView[]).map(v => (
-            <button key={v} onClick={() => setView(v)}
-              className={`px-4 py-1.5 rounded-lg text-sm font-medium capitalize transition-all ${view === v ? 'bg-[#F5EBD7] text-[#2F4F3A] shadow-sm' : 'text-[#7a6a55]'}`}>
-              {v}
-            </button>
-          ))}
-        </div>
-      </div>
+      <SectionHeader title="Calendar" sub="Academic events, tests, and holidays" />
 
-      {/* Filters */}
       <div className="flex items-center gap-3 flex-wrap">
         <span className="text-xs font-semibold text-[#7a6a55] uppercase tracking-wider">Show:</span>
-        {[
-          { label: 'Events', color: '#2F4F3A' },
-          { label: 'Tests', color: '#7DB7C9' },
-          { label: 'Holidays', color: '#E8D36A' },
-        ].map(f => (
-          <button
-            key={f.label}
-            onClick={() => toggleFilter(f.label)}
-            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border transition-all ${filter.includes(f.label) ? 'text-white' : 'bg-[#F4F1E6] text-[#7a6a55] border-[#E8E2D0]'}`}
-            style={filter.includes(f.label) ? { background: f.color, borderColor: f.color } : {}}
-          >
-            <span className="w-2 h-2 rounded-full" style={{ background: filter.includes(f.label) ? 'rgba(255,255,255,0.6)' : f.color }} />
-            {f.label}
+        {(Object.keys(CATEGORY_COLORS) as Array<keyof typeof CATEGORY_COLORS>).map(category => (
+          <button key={category} onClick={() => toggleFilter(category)}
+            className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium border ${filter.includes(category) ? 'text-white' : 'bg-[#F4F1E6] text-[#7a6a55] border-[#E8E2D0]'}`}
+            style={filter.includes(category) ? { background: CATEGORY_COLORS[category], borderColor: CATEGORY_COLORS[category] } : {}}>
+            {category}
           </button>
         ))}
       </div>
 
-      {/* Month header */}
+      {error && <Card className="p-4 text-sm text-[#b04040]">{error}</Card>}
+
       <div className="flex items-center gap-4">
-        <button className="p-2 rounded-lg hover:bg-[#E8E2D0] transition-colors"><ChevronLeft size={18} className="text-[#5a4a35]" /></button>
-        <h3 className="text-lg font-bold text-[#1a2e1e]">{currentMonth}</h3>
-        <button className="p-2 rounded-lg hover:bg-[#E8E2D0] transition-colors"><ChevronRight size={18} className="text-[#5a4a35]" /></button>
-        <button className="ml-2 px-3 py-1.5 text-xs font-semibold text-[#2F4F3A] hover:bg-[#E8E2D0] rounded-lg transition-colors">Today</button>
+        <button onClick={() => moveMonth(-1)} className="p-2 rounded-lg hover:bg-[#E8E2D0]"><ChevronLeft size={18} /></button>
+        <h3 className="text-lg font-bold text-[#1a2e1e]">{MONTH_NAMES[month]} {year}</h3>
+        <button onClick={() => moveMonth(1)} className="p-2 rounded-lg hover:bg-[#E8E2D0]"><ChevronRight size={18} /></button>
+        <button onClick={() => setVisibleMonth(new Date(today.getFullYear(), today.getMonth(), 1))} className="ml-2 px-3 py-1.5 text-xs font-semibold text-[#2F4F3A] hover:bg-[#E8E2D0] rounded-lg">Today</button>
       </div>
 
-      {/* Calendar grid */}
-      {view === 'month' && (
-        <Card className="overflow-hidden">
-          {/* Day headers */}
-          <div className="grid grid-cols-7 border-b border-[#E8E2D0]">
-            {WEEK_DAYS.map(d => (
-              <div key={d} className="py-3 text-center text-xs font-semibold text-[#7a6a55] uppercase tracking-wider">{d}</div>
-            ))}
-          </div>
-
-          {/* Days grid */}
-          <div className="grid grid-cols-7">
-            {/* Empty cells before month start */}
-            {Array.from({ length: firstDay }).map((_, i) => (
-              <div key={`empty-${i}`} className="h-24 border-b border-r border-[#E8E2D0] bg-[#f9f5ee]" />
-            ))}
-
-            {Array.from({ length: MONTH_DAYS }).map((_, i) => {
-              const day = i + 1;
-              const dayEvents = CALENDAR_EVENTS.filter(e => e.date === day && filter.includes(e.type === 'event' ? 'Events' : e.type === 'test' ? 'Tests' : 'Holidays'));
-              const isToday = day === 14;
-              const isWeekend = (firstDay + i) % 7 === 0 || (firstDay + i) % 7 === 6;
-
-              return (
-                <div key={day} className={`h-24 border-b border-r border-[#E8E2D0] p-2 ${isWeekend ? 'bg-[#faf6f0]' : ''} hover:bg-[#F5EBD7] transition-colors cursor-pointer`}>
-                  <span className={`inline-flex items-center justify-center w-6 h-6 text-xs font-semibold rounded-full ${isToday ? 'bg-[#2F4F3A] text-[#F4F1E6]' : 'text-[#3a2e1a]'}`}>
-                    {day}
-                  </span>
-                  <div className="mt-1 space-y-0.5">
-                    {dayEvents.slice(0, 2).map((ev, ei) => (
-                      <div key={ei} className="text-[10px] font-medium px-1.5 py-0.5 rounded truncate text-white leading-tight"
-                        style={{ background: ev.color }}>
-                        {ev.label}
-                      </div>
-                    ))}
-                    {dayEvents.length > 2 && <div className="text-[10px] text-[#7a6a55]">+{dayEvents.length - 2} more</div>}
-                  </div>
+      <Card className="overflow-hidden">
+        <div className="grid grid-cols-7 border-b border-[#E8E2D0]">
+          {WEEK_DAYS.map(day => <div key={day} className="py-3 text-center text-xs font-semibold text-[#7a6a55]">{day}</div>)}
+        </div>
+        <div className="grid grid-cols-7">
+          {Array.from({ length: firstDay }).map((_, index) => <div key={`empty-${index}`} className="h-24 border-b border-r border-[#E8E2D0] bg-[#f9f5ee]" />)}
+          {Array.from({ length: monthDays }).map((_, index) => {
+            const day = index + 1;
+            const dayEntries = monthEntries.filter(entry => Number(entry.date.slice(-2)) === day);
+            const isToday = year === today.getFullYear() && month === today.getMonth() && day === today.getDate();
+            return (
+              <div key={day} className="h-24 border-b border-r border-[#E8E2D0] p-2">
+                <span className={`inline-flex items-center justify-center w-6 h-6 text-xs font-semibold rounded-full ${isToday ? 'bg-[#2F4F3A] text-white' : ''}`}>{day}</span>
+                <div className="mt-1 space-y-0.5">
+                  {dayEntries.slice(0, 2).map(entry => (
+                    <div key={entry.id} className="text-[10px] font-medium px-1.5 py-0.5 rounded truncate text-white" style={{ background: CATEGORY_COLORS[entry.category] }}>{entry.title}</div>
+                  ))}
+                  {dayEntries.length > 2 && <div className="text-[10px] text-[#7a6a55]">+{dayEntries.length - 2} more</div>}
                 </div>
-              );
-            })}
-          </div>
-        </Card>
-      )}
+              </div>
+            );
+          })}
+        </div>
+      </Card>
 
-      {/* Upcoming events list */}
       <div>
-        <h4 className="text-sm font-bold text-[#1a2e1e] mb-3">Upcoming Events</h4>
+        <h4 className="text-sm font-bold text-[#1a2e1e] mb-3">Events</h4>
         <div className="space-y-3">
-          {EVENTS.map(ev => (
-            <Card key={ev.id} className="p-5 flex items-start gap-4" onClick={() => setSelectedEvent(ev)}>
-              <div className="w-12 text-center shrink-0">
-                <p className="text-xs text-[#7a6a55] uppercase font-semibold">{ev.date.split('-')[1] === '08' ? 'Aug' : 'Sep'}</p>
-                <p className="text-xl font-bold text-[#2F4F3A]">{ev.date.split('-')[2]}</p>
-              </div>
+          {events.map(event => (
+            <Card key={event.id} className="p-5 flex items-start gap-4" onClick={() => setSelectedEvent(event)}>
               <div className="flex-1 min-w-0">
-                <div className="flex items-center gap-2 mb-1">
-                  <p className="text-sm font-bold text-[#1a2e1e]">{ev.title}</p>
-                  <Badge variant="info">{ev.council}</Badge>
-                </div>
+                <div className="flex items-center gap-2 mb-1"><p className="text-sm font-bold">{event.title}</p><Badge variant="info">{event.council}</Badge></div>
                 <div className="flex gap-3 text-xs text-[#7a6a55] flex-wrap">
-                  <span className="flex items-center gap-1"><Clock size={11} />{ev.startTime}–{ev.endTime}</span>
-                  <span className="flex items-center gap-1"><MapPin size={11} />{ev.venue}</span>
+                  <span>{event.date}</span><span className="flex items-center gap-1"><Clock size={11} />{event.startTime}–{event.endTime}</span><span className="flex items-center gap-1"><MapPin size={11} />{event.venue}</span>
                 </div>
               </div>
-              {ev.registrationLink && (
-                <Button size="sm" variant="outline">Register</Button>
-              )}
             </Card>
           ))}
+          {!events.length && !error && <Card className="p-6 text-center text-sm text-[#7a6a55]">No visible events.</Card>}
         </div>
       </div>
 
       {selectedEvent && (
         <Modal title={selectedEvent.title} onClose={() => setSelectedEvent(null)} width="max-w-lg">
           <div className="space-y-4">
-            <div className="flex items-center gap-2">
-              <Badge variant="info">{selectedEvent.council}</Badge>
-              <Badge variant="college">College Wide</Badge>
-            </div>
-            <p className="text-sm text-[#3a2e1a] leading-relaxed">{selectedEvent.description}</p>
-            <div className="grid grid-cols-2 gap-3 text-sm">
-              <div className="bg-[#F4F1E6] rounded-xl p-3">
-                <p className="text-xs text-[#7a6a55]">Date</p>
-                <p className="font-semibold text-[#1a2e1e] mt-0.5">{selectedEvent.date}</p>
-              </div>
-              <div className="bg-[#F4F1E6] rounded-xl p-3">
-                <p className="text-xs text-[#7a6a55]">Time</p>
-                <p className="font-semibold text-[#1a2e1e] mt-0.5">{selectedEvent.startTime} – {selectedEvent.endTime}</p>
-              </div>
-              <div className="bg-[#F4F1E6] rounded-xl p-3 col-span-2">
-                <p className="text-xs text-[#7a6a55]">Venue</p>
-                <p className="font-semibold text-[#1a2e1e] mt-0.5">{selectedEvent.venue}</p>
-              </div>
-            </div>
-            {selectedEvent.registrationLink && (
-              <Button variant="primary" className="w-full justify-center" onClick={() => {}}>
-                <ExternalLink size={14} /> Register for Event
-              </Button>
-            )}
+            <div className="flex gap-2"><Badge variant="info">{selectedEvent.council}</Badge><Badge variant="college">{selectedEvent.visibility}</Badge></div>
+            <p className="text-sm text-[#3a2e1a]">{selectedEvent.description}</p>
+            <p className="text-sm"><strong>Date:</strong> {selectedEvent.date}</p>
+            <p className="text-sm"><strong>Time:</strong> {selectedEvent.startTime}–{selectedEvent.endTime}</p>
+            <p className="text-sm"><strong>Venue:</strong> {selectedEvent.venue}</p>
+            {selectedEvent.registrationLink && <Button variant="primary" className="w-full justify-center" onClick={() => window.open(selectedEvent.registrationLink!, '_blank', 'noopener,noreferrer')}><ExternalLink size={14} /> Registration</Button>}
           </div>
         </Modal>
       )}

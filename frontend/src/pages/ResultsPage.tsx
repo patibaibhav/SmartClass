@@ -1,82 +1,67 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, ChevronRight } from 'lucide-react';
 import { Card, MetricCard, SectionHeader, ProgressBar, Badge } from '../components/ui';
-import { RESULTS_DATA } from '../data/mock';
-import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, Legend } from 'recharts';
+import { api } from '../services/api';
 
-const TREND_HISTORY = [
-  { month: 'May', assignments: 72, quizzes: 65 },
-  { month: 'Jun', assignments: 78, quizzes: 70 },
-  { month: 'Jul', assignments: 81, quizzes: 74 },
-  { month: 'Aug', assignments: 84, quizzes: 77 },
-];
+interface CourseResult {
+  course: string;
+  name: string;
+  assignments: number | null;
+  quizzes: number | null;
+  average: number | null;
+  trend: string;
+  isDemo: boolean;
+}
 
 const TrendIcon = ({ trend }: { trend: string }) =>
   trend === 'up' ? <TrendingUp size={14} className="text-[#2F4F3A]" /> :
   trend === 'down' ? <TrendingDown size={14} className="text-[#D98282]" /> :
   <Minus size={14} className="text-[#9a8a75]" />;
 
-interface Props {
-  role?: string;
-}
+interface Props { role?: string; }
 
 export default function ResultsPage({ role = 'student' }: Props) {
+  const [results, setResults] = useState<CourseResult[]>([]);
   const [selectedCourse, setSelectedCourse] = useState<string | null>(null);
-  const overall = Math.round(RESULTS_DATA.reduce((s, r) => s + r.average, 0) / RESULTS_DATA.length);
+  const [insights, setInsights] = useState<any>(null);
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api.getResults().then(setResults).catch(err => setError(err.message));
+  }, []);
+
+  useEffect(() => {
+    if (!selectedCourse || role !== 'student') return;
+    api.getPerformanceInsights(selectedCourse).then(setInsights).catch(err => setError(err.message));
+  }, [role, selectedCourse]);
+
+  const overall = useMemo(() => {
+    const values = results.map(result => result.average).filter((value): value is number => value !== null);
+    return values.length ? Math.round(values.reduce((sum, value) => sum + value, 0) / values.length) : null;
+  }, [results]);
 
   if (selectedCourse) {
-    const course = RESULTS_DATA.find(r => r.course === selectedCourse)!;
+    const course = results.find(result => result.course === selectedCourse);
+    if (!course) return null;
     return (
       <div className="p-6 max-w-4xl mx-auto space-y-5">
-        <button onClick={() => setSelectedCourse(null)} className="text-sm text-[#2F4F3A] font-semibold hover:underline">← Back to Results</button>
-
-        <div className="flex items-center gap-3">
-          <h2 className="text-xl font-bold text-[#1a2e1e]">{course.course}</h2>
-          <TrendIcon trend={course.trend} />
-        </div>
-
+        <button onClick={() => { setSelectedCourse(null); setInsights(null); }} className="text-sm text-[#2F4F3A] font-semibold hover:underline">← Back to Results</button>
+        <div className="flex items-center gap-3"><h2 className="text-xl font-bold text-[#1a2e1e]">{course.name}</h2><TrendIcon trend={course.trend} />{course.isDemo && <Badge variant="warning">Demonstration data</Badge>}</div>
         <div className="grid sm:grid-cols-3 gap-4">
-          <MetricCard label="Assignments" value={`${course.assignments}%`} color="#2F4F3A" />
-          <MetricCard label="Quizzes" value={`${course.quizzes}%`} color="#7DB7C9" />
-          <MetricCard label="Average" value={`${course.average}%`} color={course.average >= 75 ? '#2F4F3A' : '#D98282'} />
+          <MetricCard label="Assignments" value={course.assignments === null ? '—' : `${course.assignments}%`} color="#2F4F3A" />
+          <MetricCard label="Quizzes" value={course.quizzes === null ? '—' : `${course.quizzes}%`} color="#7DB7C9" />
+          <MetricCard label="Average" value={course.average === null ? '—' : `${course.average}%`} color="#2F4F3A" />
         </div>
-
-        <Card className="p-5">
-          <p className="text-xs font-semibold text-[#4a3a2a] uppercase tracking-wider mb-4">Performance Breakdown</p>
-          <div className="h-48">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={[{ name: 'Assignments', value: course.assignments }, { name: 'Quizzes', value: course.quizzes }, { name: 'Average', value: course.average }]}>
-                <XAxis dataKey="name" tick={{ fontSize: 12, fill: '#7a6a55' }} />
-                <YAxis domain={[0, 100]} tick={{ fontSize: 11, fill: '#7a6a55' }} tickFormatter={v => `${v}%`} />
-                <Tooltip formatter={(v: any) => [`${v}%`]} contentStyle={{ background: '#F5EBD7', border: '1px solid #E8E2D0', borderRadius: 12, fontSize: 12 }} />
-                <Bar dataKey="value" fill="#2F4F3A" radius={[6, 6, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
-        </Card>
-
-        {/* Assignment breakdown */}
-        <Card className="overflow-hidden">
-          <div className="px-5 py-4 border-b border-[#E8E2D0]">
-            <p className="text-sm font-bold text-[#1a2e1e]">Assignment History</p>
-          </div>
-          <table className="sc-table">
-            <thead><tr><th>Assignment</th><th>Max Marks</th><th>Obtained</th><th>Percentage</th></tr></thead>
-            <tbody>
-              {[
-                { title: 'Assignment 1 — Introduction', max: 20, got: 18 },
-                { title: 'Assignment 2 — Normalization', max: 20, got: 17 },
-                { title: 'Assignment 3 — Transactions', max: 15, got: 12 },
-              ].map((a, i) => (
-                <tr key={i}>
-                  <td>{a.title}</td>
-                  <td>{a.max}</td>
-                  <td className="font-semibold text-[#2F4F3A]">{a.got}</td>
-                  <td>{Math.round((a.got / a.max) * 100)}%</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+        <Card className="p-5 space-y-4">
+          <div><p className="text-sm font-bold text-[#1a2e1e]">Topic-wise Performance Insights (rule-based)</p><p className="text-xs text-[#7a6a55]">Advisory analysis; official scores are unchanged.</p></div>
+          {insights?.topics?.length ? insights.topics.map((topic: any) => (
+            <div key={topic.topic}>
+              <div className="flex justify-between text-sm"><span>{topic.topic}</span><span>{topic.accuracy}% · {topic.classification}</span></div>
+              <ProgressBar value={topic.accuracy} />
+              <p className="text-xs text-[#9a8a75] mt-1">{topic.questionCount} questions across {topic.testCount} tests</p>
+            </div>
+          )) : <p className="text-sm text-[#7a6a55]">Complete more released quizzes to generate reliable topic insights.</p>}
+          {insights?.recommendations?.map((recommendation: string) => <p key={recommendation} className="text-sm text-[#3a2e1a]">• {recommendation}</p>)}
         </Card>
       </div>
     );
@@ -84,73 +69,26 @@ export default function ResultsPage({ role = 'student' }: Props) {
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
-      <SectionHeader title="Results" sub="Academic performance across all courses" />
-
-      {/* Summary metrics */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-        <MetricCard label="Overall Average" value={`${overall}%`} sub="Semester average" color="#2F4F3A" />
-        <MetricCard label="Assignments" value="83%" sub="All courses" color="#7DB7C9" />
-        <MetricCard label="Quizzes" value="75%" sub="All courses" color="#7a6000" />
-        <MetricCard label="Best Subject" value="CS304" sub="88% average" color="#2F4F3A" />
-      </div>
-
-      {/* Trend chart */}
-      <Card className="p-5">
-        <p className="text-xs font-semibold text-[#4a3a2a] uppercase tracking-wider mb-4">Performance Trend</p>
-        <div className="h-44">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={TREND_HISTORY}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#E8E2D0" />
-              <XAxis dataKey="month" tick={{ fontSize: 12, fill: '#7a6a55' }} />
-              <YAxis domain={[60, 100]} tick={{ fontSize: 11, fill: '#7a6a55' }} tickFormatter={v => `${v}%`} />
-              <Tooltip formatter={(v: any) => [`${v}%`]} contentStyle={{ background: '#F5EBD7', border: '1px solid #E8E2D0', borderRadius: 12, fontSize: 12 }} />
-              <Legend />
-              <Line type="monotone" dataKey="assignments" stroke="#2F4F3A" strokeWidth={2} dot={{ r: 4, fill: '#2F4F3A' }} name="Assignments" />
-              <Line type="monotone" dataKey="quizzes" stroke="#7DB7C9" strokeWidth={2} dot={{ r: 4, fill: '#7DB7C9' }} name="Quizzes" />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-      </Card>
-
-      {/* Course-wise table */}
+      <SectionHeader title="Results" sub="Academic performance calculated from recorded submissions and quiz attempts" />
+      {error && <Card className="p-4 text-sm text-[#b04040]">{error}</Card>}
+      <MetricCard label="Overall Average" value={overall === null ? '—' : `${overall}%`} sub="Available recorded work" color="#2F4F3A" />
       <Card className="overflow-hidden">
-        <div className="px-5 py-4 border-b border-[#E8E2D0] flex items-center justify-between">
-          <p className="text-sm font-bold text-[#1a2e1e]">Course-wise Performance</p>
-        </div>
         <table className="sc-table">
           <thead><tr><th>Course</th><th>Assignments</th><th>Quizzes</th><th>Average</th><th>Trend</th><th></th></tr></thead>
           <tbody>
-            {RESULTS_DATA.map(r => (
-              <tr key={r.course}>
-                <td>
-                  <p className="font-semibold">{r.course}</p>
-                  <p className="text-xs text-[#7a6a55] truncate max-w-[160px]">{r.name}</p>
-                </td>
-                <td>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">{r.assignments}%</span>
-                    <div className="w-16"><ProgressBar value={r.assignments} /></div>
-                  </div>
-                </td>
-                <td>
-                  <div className="flex items-center gap-2">
-                    <span className="font-semibold">{r.quizzes}%</span>
-                    <div className="w-16"><ProgressBar value={r.quizzes} /></div>
-                  </div>
-                </td>
-                <td>
-                  <span className="font-bold text-base" style={{ color: r.average >= 75 ? '#2F4F3A' : '#D98282' }}>{r.average}%</span>
-                </td>
-                <td><TrendIcon trend={r.trend} /></td>
-                <td>
-                  <button onClick={() => setSelectedCourse(r.course)} className="text-xs text-[#2F4F3A] font-semibold hover:underline flex items-center gap-0.5">
-                    Details <ChevronRight size={12} />
-                  </button>
-                </td>
+            {results.map(result => (
+              <tr key={result.course}>
+                <td><p className="font-semibold">{result.course}</p><p className="text-xs text-[#7a6a55]">{result.name}</p>{result.isDemo && <Badge variant="warning">Demo</Badge>}</td>
+                <td>{result.assignments === null ? '—' : `${result.assignments}%`}</td>
+                <td>{result.quizzes === null ? '—' : `${result.quizzes}%`}</td>
+                <td className="font-bold">{result.average === null ? '—' : `${result.average}%`}</td>
+                <td><TrendIcon trend={result.trend} /></td>
+                <td>{role === 'student' && <button onClick={() => setSelectedCourse(result.course)} className="text-xs text-[#2F4F3A] font-semibold flex items-center">Details <ChevronRight size={12} /></button>}</td>
               </tr>
             ))}
           </tbody>
         </table>
+        {!results.length && !error && <div className="p-8 text-center text-sm text-[#7a6a55]">No recorded results are available.</div>}
       </Card>
     </div>
   );

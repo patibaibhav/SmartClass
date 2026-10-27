@@ -16,6 +16,12 @@ __pycache__/
 .pytest_cache/
 *.db
 *.sqlite3
+docs/data.xlsx
+docs/validation-report.local.json
+docs/timetable-parse.local.json
+backend/uploads/
+*credentials*.csv
+*credential-manifest*
 
 # Environment and local configs
 .env

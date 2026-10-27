@@ -1,0 +1,15 @@
+{
+  "subject_aliases": {
+    "SD": "SSD"
+  },
+  "class_aliases": {
+    "D17B": "D12B",
+    "D17C": "D12C"
+  },
+  "project_activity_approved": true,
+  "approval_record": {
+    "approved_by": "project_owner",
+    "approved_on": "2026-10-27",
+    "source": "explicit user confirmation in Codex session"
+  }
+}

@@ -1,24 +1,21 @@
-import logging
+from __future__ import annotations
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import declarative_base, sessionmaker
-from config import DATABASE_URL, SQLITE_URL
 
-logger = logging.getLogger(__name__)
+from config import DATABASE_URL
 
-engine = None
-SessionLocal = None
+
+engine_options: dict[str, object] = {"pool_pre_ping": True}
+if DATABASE_URL.startswith("sqlite"):
+    engine_options["connect_args"] = {"check_same_thread": False}
+
+# A configured database failure is fatal. Production must never silently switch
+# to a different database and appear healthy with missing records.
+engine = create_engine(DATABASE_URL, **engine_options)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
-try:
-    # Try connecting to PostgreSQL
-    engine = create_engine(DATABASE_URL, pool_pre_ping=True)
-    with engine.connect() as conn:
-        logger.info("Successfully connected to PostgreSQL database.")
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-except Exception as e:
-    logger.warning(f"Could not connect to PostgreSQL ({e}). Falling back to SQLite.")
-    engine = create_engine(SQLITE_URL, connect_args={"check_same_thread": False})
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 def get_db():
     db = SessionLocal()

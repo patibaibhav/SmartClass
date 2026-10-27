@@ -1,7 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { AlertCircle, CheckCircle, Plus, ChevronRight } from 'lucide-react';
 import { Card, Badge, Button, Tabs, SectionHeader, EmptyState, Modal, Input, Avatar } from '../components/ui';
-import { GRIEVANCES } from '../data/mock';
 import { api } from '../services/api';
 
 interface Props {
@@ -21,7 +20,8 @@ const STATUS_BADGE: Record<string, any> = {
 
 export default function GrievancesPage({ role = 'student' }: Props) {
   const [tab, setTab] = useState('All');
-  const [list, setList] = useState<any[]>(GRIEVANCES);
+  const [list, setList] = useState<any[]>([]);
+  const [error, setError] = useState('');
   const [selected, setSelected] = useState<any | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [category, setCategory] = useState('Attendance');
@@ -30,8 +30,11 @@ export default function GrievancesPage({ role = 'student' }: Props) {
 
   useEffect(() => {
     async function load() {
-      const data = await api.getGrievances();
-      if (data && data.length > 0) setList(data);
+      try {
+        setList(await api.getGrievances());
+      } catch (err: any) {
+        setError(err.message || 'Unable to load grievances.');
+      }
     }
     load();
   }, []);
@@ -40,7 +43,7 @@ export default function GrievancesPage({ role = 'student' }: Props) {
     if (!subject || !desc) return;
     const res = await api.submitGrievance(subject, category, desc);
     const newG = {
-      id: res ? res.grievanceId : `GR${Date.now()}`,
+      id: res.grievanceId,
       subject,
       category,
       description: desc,
@@ -142,8 +145,8 @@ export default function GrievancesPage({ role = 'student' }: Props) {
           <table className="sc-table">
             <thead><tr><th>Grievance</th><th>Category</th><th>Submitted</th><th>Status</th><th>Last Updated</th><th></th></tr></thead>
             <tbody>
-              {[...GRIEVANCES, ...GRIEVANCES].slice(0, 8).map((g, i) => (
-                <tr key={`${g.id}-${i}`}>
+              {list.map((g, i) => (
+                <tr key={g.id}>
                   <td className="max-w-[200px]">
                     <p className="font-semibold text-xs truncate">{g.subject}</p>
                     <p className="text-[#9a8a75]">STU{String(i + 1).padStart(3, '0')}</p>
@@ -174,6 +177,7 @@ export default function GrievancesPage({ role = 'student' }: Props) {
         action={<Button variant="primary" onClick={() => setCreateOpen(true)}><Plus size={14} /> Submit Grievance</Button>}
       />
       <Tabs tabs={STUDENT_TABS} active={tab} onChange={setTab} />
+      {error && <Card className="p-4 text-sm text-[#b04040]">{error}</Card>}
 
       <div className="space-y-3">
         {list.length === 0 ? (

@@ -1,5 +1,5 @@
 from typing import List, Optional, Any, Dict
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # Auth schemas
 class LoginRequest(BaseModel):
@@ -8,7 +8,6 @@ class LoginRequest(BaseModel):
     remember: bool = False
 
 class FirstLoginRequest(BaseModel):
-    user_id: str
     new_password: str
     confirm_password: str
 
@@ -18,19 +17,17 @@ class ChangePasswordRequest(BaseModel):
     confirm_password: str
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(populate_by_name=True, from_attributes=True)
+
     id: str
     name: str
-    email: str
+    email: Optional[str] = None
     role: str
     isHOD: Optional[bool] = False
     department: str
     className: Optional[str] = Field(default=None, alias="class")
     avatar: Optional[str] = None
     firstLogin: Optional[bool] = False
-
-    class Config:
-        populate_by_name = True
-        from_attributes = True
 
 class TokenResponse(BaseModel):
     token: str
@@ -96,6 +93,7 @@ class QuizCreateRequest(BaseModel):
     duration_minutes: int
     opens_at: str
     closes_at: str
+    max_attempts: int = Field(default=1, ge=1, le=10)
     topics: List[str] = []
 
 class QuizSubmitRequest(BaseModel):

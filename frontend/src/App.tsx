@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import Login from './pages/Login';
 import Layout, { type Page } from './components/Layout';
 import StudentDashboard from './pages/StudentDashboard';
@@ -20,19 +20,39 @@ import ClassroomAvailabilityPage from './pages/ClassroomAvailabilityPage';
 import ProfilePage from './pages/ProfilePage';
 import NotificationsPage from './pages/NotificationsPage';
 import MyClassPage from './pages/MyClassPage';
-import type { User } from './data/mock';
-import { NOTIFICATIONS } from './data/mock';
+import type { User } from './types';
+import { api } from './services/api';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [currentPage, setCurrentPage] = useState<Page>('dashboard');
+  const [restoringSession, setRestoringSession] = useState(true);
+  const [notificationCount, setNotificationCount] = useState(0);
+
+  useEffect(() => {
+    api.me()
+      .then(setUser)
+      .catch(() => setUser(null))
+      .finally(() => setRestoringSession(false));
+  }, []);
+
+  useEffect(() => {
+    if (!user) {
+      setNotificationCount(0);
+      return;
+    }
+    api.getNotifications()
+      .then(items => setNotificationCount(items.filter(item => !item.read).length))
+      .catch(() => setNotificationCount(0));
+  }, [user]);
 
   function handleLogin(u: User) {
     setUser(u);
     setCurrentPage('dashboard');
   }
 
-  function handleLogout() {
+  async function handleLogout() {
+    await api.logout().catch(() => undefined);
     setUser(null);
     setCurrentPage('dashboard');
   }
@@ -41,11 +61,13 @@ export default function App() {
     setCurrentPage(page as Page);
   }
 
+  if (restoringSession) {
+    return <div className="min-h-screen bg-[#F4F1E6]" />;
+  }
+
   if (!user) {
     return <Login onLogin={handleLogin} />;
   }
-
-  const unread = NOTIFICATIONS.filter(n => !n.read).length;
 
   function renderPage() {
     // Role-aware page rendering
@@ -148,7 +170,7 @@ export default function App() {
       currentPage={currentPage}
       onNavigate={navigate}
       onLogout={handleLogout}
-      notificationCount={unread}
+      notificationCount={notificationCount}
       onNotifications={() => navigate('notifications')}
     >
       {renderPage()}

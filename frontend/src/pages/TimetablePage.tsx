@@ -1,12 +1,31 @@
-import React, { useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, Plus, Clock } from 'lucide-react';
 import { Card, Badge, Button, Select, SectionHeader, Tabs } from '../components/ui';
-import { TIMETABLE } from '../data/mock';
+import { api } from '../services/api';
 
 const DAYS = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday'] as const;
-const TIMES = ['09:00', '10:00', '11:00', '11:15', '12:15', '14:00', '15:00', '16:00'];
-
 type LectureType = 'Regular' | 'Substitute' | 'Extra' | 'Cancelled';
+
+interface TimetableLecture {
+  id: number;
+  time: string;
+  startTime: string;
+  endTime: string;
+  course: string;
+  code: string;
+  faculty: string | null;
+  room: string | null;
+  type: LectureType;
+  classIds?: string[];
+  batches?: string[];
+  parallelGroup?: string | null;
+}
+
+type Timetable = Record<(typeof DAYS)[number], TimetableLecture[]>;
+
+const EMPTY_TIMETABLE: Timetable = {
+  Monday: [], Tuesday: [], Wednesday: [], Thursday: [], Friday: [],
+};
 
 const TYPE_COLORS: Record<LectureType, string> = {
   Regular: '#eaf3f8',
@@ -30,9 +49,22 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
   const [view, setView] = useState('Full Timetable');
   const [selectedDay, setSelectedDay] = useState('Wednesday');
   const [weekOffset, setWeekOffset] = useState(0);
+  const [timetable, setTimetable] = useState<Timetable>(EMPTY_TIMETABLE);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
 
-  const todayLabel = 'Wednesday, Aug 14, 2024';
-  const weekLabel = 'Aug 12 – Aug 16, 2024';
+  useEffect(() => {
+    api.getTimetable()
+      .then(data => setTimetable({ ...EMPTY_TIMETABLE, ...data } as Timetable))
+      .catch(err => setError(err.message || 'Unable to load the timetable.'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const times = useMemo(() => Array.from(new Set(
+    DAYS.flatMap(day => timetable[day].map(lecture => lecture.startTime)),
+  )).sort(), [timetable]);
+
+  const weekLabel = weekOffset === 0 ? 'Official weekly schedule' : 'Base weekly schedule';
 
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-5">
@@ -75,7 +107,10 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
         ))}
       </div>
 
-      {view === 'Full Timetable' ? (
+      {loading && <Card className="p-8 text-center text-sm text-[#7a6a55]">Loading timetable…</Card>}
+      {error && <Card className="p-5 text-sm text-[#b04040]">{error}</Card>}
+
+      {!loading && !error && (view === 'Full Timetable' ? (
         /* Full grid */
         <div className="overflow-x-auto rounded-2xl border border-[#E8E2D0]">
           <table className="w-full min-w-[800px]" style={{ background: '#F5EBD7' }}>
@@ -90,9 +125,9 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
               </tr>
             </thead>
             <tbody>
-              {TIMES.map(time => {
+              {times.map(time => {
                 const rowCells = DAYS.map(day => {
-                  const lectures = (TIMETABLE[day as keyof typeof TIMETABLE] || []).filter(l => l.time.startsWith(time));
+                  const lectures = timetable[day].filter(lecture => lecture.startTime === time);
                   return { day, lectures };
                 });
                 if (rowCells.every(c => c.lectures.length === 0)) return null;
@@ -107,8 +142,9 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
                             borderLeftColor: TYPE_BORDER[l.type as LectureType] || TYPE_BORDER.Regular,
                           }}>
                             <p className="font-semibold text-[#1a2e1e] leading-snug">{l.course}</p>
-                            <p className="text-[#7a6a55] mt-0.5">{l.room}</p>
-                            <p className="text-[#9a8a75]">{l.faculty}</p>
+                            <p className="text-[#7a6a55] mt-0.5">{l.room || 'Room not provided'}</p>
+                            <p className="text-[#9a8a75]">{l.faculty || 'Faculty not provided'}</p>
+                            {l.batches?.length ? <p className="text-[#9a8a75]">{l.batches.join(', ')}</p> : null}
                           </div>
                         ))}
                       </td>
@@ -136,11 +172,11 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
           </div>
 
           <div className="space-y-3">
-            {(TIMETABLE[selectedDay as keyof typeof TIMETABLE] || []).map((lecture, i) => (
+            {(timetable[selectedDay as keyof Timetable] || []).map((lecture, i) => (
               <Card key={i} className="p-5 flex gap-5 items-start border-l-4" style={{ borderLeftColor: TYPE_BORDER[lecture.type as LectureType] } as React.CSSProperties}>
                 <div className="shrink-0 text-center w-20">
-                  <p className="text-base font-bold text-[#2F4F3A]">{lecture.time.split('–')[0]}</p>
-                  <p className="text-xs text-[#9a8a75]">–{lecture.time.split('–')[1]}</p>
+                  <p className="text-base font-bold text-[#2F4F3A]">{lecture.startTime}</p>
+                  <p className="text-xs text-[#9a8a75]">–{lecture.endTime}</p>
                 </div>
                 <div className="flex-1">
                   <div className="flex items-center gap-2 flex-wrap mb-1">
@@ -150,8 +186,8 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
                   </div>
                   <div className="flex gap-4 text-xs text-[#7a6a55]">
                     <span className="flex items-center gap-1"><Clock size={11} />{lecture.time}</span>
-                    <span>Room {lecture.room}</span>
-                    <span>{lecture.faculty}</span>
+                    <span>{lecture.room ? `Room ${lecture.room}` : 'Room not provided'}</span>
+                    <span>{lecture.faculty || 'Faculty not provided'}</span>
                   </div>
                   {lecture.type === 'Substitute' && (
                     <p className="text-xs text-[#7a6000] mt-2 bg-[#fdf6e0] rounded-lg px-3 py-1.5 inline-block">
@@ -164,14 +200,14 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
                 </div>
               </Card>
             ))}
-            {!(TIMETABLE[selectedDay as keyof typeof TIMETABLE]?.length) && (
+            {!timetable[selectedDay as keyof Timetable]?.length && (
               <Card className="p-10 text-center">
                 <p className="text-sm text-[#9a8a75]">No lectures scheduled for {selectedDay}.</p>
               </Card>
             )}
           </div>
         </div>
-      )}
+      ))}
     </div>
   );
 }

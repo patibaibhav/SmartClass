@@ -1,21 +1,12 @@
 import React, { useState } from 'react';
 import { BookOpen, Eye, EyeOff, AlertCircle, CheckCircle } from 'lucide-react';
 import { Button, Input } from '../components/ui';
-import type { Role, User } from '../data/mock';
-import { USERS } from '../data/mock';
+import type { User } from '../types';
 import { api } from '../services/api';
 
 interface LoginProps {
   onLogin: (user: User) => void;
 }
-
-const DEMO_USERS = [
-  { label: 'Student', id: 'STU001', pass: 'demo1234' },
-  { label: 'Faculty', id: 'FAC001', pass: 'demo1234' },
-  { label: 'Faculty (HOD)', id: 'FAC002', pass: 'demo1234' },
-  { label: 'Admin', id: 'ADM001', pass: 'demo1234' },
-  { label: 'Council Head', id: 'CON001', pass: 'demo1234' },
-];
 
 export default function Login({ onLogin }: LoginProps) {
   const [userId, setUserId] = useState('');
@@ -39,7 +30,7 @@ export default function Login({ onLogin }: LoginProps) {
     setError('');
     setLoading(true);
     try {
-      const resp = await api.login(userId, password);
+      const resp = await api.login(userId, password, remember);
       if (resp.phase === 'first-login') {
         setPendingUser(resp.user);
         setPhase('first-login');
@@ -47,18 +38,7 @@ export default function Login({ onLogin }: LoginProps) {
         onLogin(resp.user);
       }
     } catch (err: any) {
-      // If network error, check mock data
-      const user = USERS.find(u => u.id === userId);
-      if (user && (password === 'demo1234' || password === 'Temp@123')) {
-        if (password === 'Temp@123') {
-          setPendingUser(user);
-          setPhase('first-login');
-        } else {
-          onLogin(user);
-        }
-      } else {
-        setError(err.message || 'Invalid User ID or password. Please try again.');
-      }
+      setError(err.message || 'Unable to sign in. Please try again.');
     } finally {
       setLoading(false);
     }
@@ -67,47 +47,34 @@ export default function Login({ onLogin }: LoginProps) {
   async function handleFirstLogin(e: React.FormEvent) {
     e.preventDefault();
     setPassError('');
-    if (newPass.length < 8) { setPassError('Password must be at least 8 characters.'); return; }
+    if (newPass.length < 12) { setPassError('Password must be at least 12 characters.'); return; }
     if (!/[A-Z]/.test(newPass)) { setPassError('Password must contain at least one uppercase letter.'); return; }
+    if (!/[a-z]/.test(newPass)) { setPassError('Password must contain at least one lowercase letter.'); return; }
     if (!/[0-9]/.test(newPass)) { setPassError('Password must contain at least one number.'); return; }
+    if (!/[^A-Za-z0-9]/.test(newPass)) { setPassError('Password must contain at least one special character.'); return; }
     if (newPass !== confirmPass) { setPassError('Passwords do not match.'); return; }
     
     setLoading(true);
     try {
       if (pendingUser) {
-        const resp = await api.firstLogin(pendingUser.id, newPass, confirmPass);
+        const resp = await api.firstLogin(newPass, confirmPass);
         setSuccess(true);
         setTimeout(() => onLogin(resp.user || pendingUser), 1000);
       }
     } catch (err: any) {
-      // Fallback
-      setSuccess(true);
-      setTimeout(() => pendingUser && onLogin(pendingUser), 1000);
+      setPassError(err.message || 'Unable to update the password. Please try again.');
     } finally {
       setLoading(false);
     }
   }
 
-  async function quickLogin(id: string) {
-    setError('');
-    try {
-      const resp = await api.login(id, 'demo1234');
-      if (resp.user) {
-        onLogin(resp.user);
-        return;
-      }
-    } catch {
-      // Fallback to mock
-    }
-    const user = USERS.find(u => u.id === id);
-    if (user) onLogin(user);
-  }
-
   if (phase === 'first-login') {
     const reqs = [
-      { label: 'At least 8 characters', met: newPass.length >= 8 },
+      { label: 'At least 12 characters', met: newPass.length >= 12 },
       { label: 'One uppercase letter', met: /[A-Z]/.test(newPass) },
+      { label: 'One lowercase letter', met: /[a-z]/.test(newPass) },
       { label: 'One number', met: /[0-9]/.test(newPass) },
+      { label: 'One special character', met: /[^A-Za-z0-9]/.test(newPass) },
     ];
     return (
       <div className="min-h-screen bg-[#F4F1E6] flex items-center justify-center p-4">
@@ -236,23 +203,6 @@ export default function Login({ onLogin }: LoginProps) {
             <p className="text-xs text-[#9a8a75] text-center">Contact your administrator if you have forgotten your credentials.</p>
           </form>
 
-          {/* Quick demo access */}
-          <div className="px-8 pb-7">
-            <div className="border-t border-[#E8E2D0] pt-5">
-              <p className="text-xs text-[#7a6a55] font-medium mb-3 text-center">Quick Demo Access</p>
-              <div className="flex flex-wrap gap-2 justify-center">
-                {DEMO_USERS.map(u => (
-                  <button
-                    key={u.id}
-                    onClick={() => quickLogin(u.id)}
-                    className="px-3 py-1.5 bg-[#E8E2D0] hover:bg-[#2F4F3A] hover:text-[#F4F1E6] text-[#2F4F3A] text-xs font-medium rounded-lg transition-colors"
-                  >
-                    {u.label}
-                  </button>
-                ))}
-              </div>
-            </div>
-          </div>
         </div>
       </div>
     </div>

@@ -1,128 +1,227 @@
+from __future__ import annotations
+
 import hashlib
-import os
 import secrets
-from datetime import datetime, timedelta
-from typing import Optional, Dict, Any
+import uuid
+from datetime import datetime, timedelta, timezone
+from typing import Any, Dict, Optional
+
 import jwt
-from fastapi import HTTPException, Security, status, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, HTTPException, Security, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
-from database import get_db
+
 import models
 from config import (
-    SECRET_KEY, ALGORITHM, ACCESS_TOKEN_EXPIRE_MINUTES,
-    MAX_FAILED_LOGIN_ATTEMPTS, ACCOUNT_LOCKOUT_MINUTES
+    ACCESS_TOKEN_EXPIRE_MINUTES,
+    ACCOUNT_LOCKOUT_MINUTES,
+    ALGORITHM,
+    MAX_FAILED_LOGIN_ATTEMPTS,
+    PASSWORD_SETUP_TOKEN_EXPIRE_MINUTES,
+    SECRET_KEY,
 )
+from database import get_db
+
 
 security = HTTPBearer(auto_error=False)
+
+
+def utc_now() -> datetime:
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
 
 def generate_salt() -> str:
     return secrets.token_hex(16)
 
+
 def hash_password(password: str, salt: str) -> str:
-    """One-way cryptographic hash with per-password salt using PBKDF2-HMAC-SHA256 (FR-AUTH-004)."""
+    """PBKDF2-HMAC-SHA256 with a unique per-password salt."""
     return hashlib.pbkdf2_hmac(
-        'sha256',
-        password.encode('utf-8'),
-        salt.encode('utf-8'),
-        100000
+        "sha256", password.encode("utf-8"), salt.encode("utf-8"), 100_000
     ).hex()
+
 
 def verify_password(password: str, salt: str, expected_hash: str) -> bool:
     candidate_hash = hash_password(password, salt)
     return secrets.compare_digest(candidate_hash, expected_hash)
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
-    to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.utcnow() + expires_delta
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire, "iat": datetime.utcnow()})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+def validate_password(password: str) -> Optional[str]:
+    if len(password) < 12:
+        return "Password must be at least 12 characters."
+    if not any(character.isupper() for character in password):
+        return "Password must contain at least one uppercase letter."
+    if not any(character.islower() for character in password):
+        return "Password must contain at least one lowercase letter."
+    if not any(character.isdigit() for character in password):
+        return "Password must contain at least one number."
+    if not any(not character.isalnum() for character in password):
+        return "Password must contain at least one special character."
+    return None
+
+
+def create_access_token(
+    data: dict[str, Any],
+    expires_delta: Optional[timedelta] = None,
+    *,
+    purpose: str = "access",
+) -> str:
+    now = utc_now()
+    lifetime = expires_delta or timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    payload = data.copy()
+    payload.update(
+        {
+            "exp": now + lifetime,
+            "iat": now,
+            "jti": uuid.uuid4().hex,
+            "purpose": purpose,
+        }
+    )
+    return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def create_password_setup_token(user: models.User) -> str:
+    return create_access_token(
+        {"sub": user.id, "ver": user.token_version},
+        expires_delta=timedelta(minutes=PASSWORD_SETUP_TOKEN_EXPIRE_MINUTES),
+        purpose="password_setup",
+    )
+
 
 def decode_access_token(token: str) -> Dict[str, Any]:
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        return payload
-    except jwt.PyJWTError:
+        return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+    except jwt.PyJWTError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
-        )
+        ) from exc
+
+
+def _resolve_token_user(
+    credentials: HTTPAuthorizationCredentials,
+    db: Session,
+    *,
+    expected_purpose: str,
+) -> tuple[models.User, Dict[str, Any]]:
+    payload = decode_access_token(credentials.credentials)
+    if payload.get("purpose") != expected_purpose:
+        raise HTTPException(status_code=401, detail="Invalid token purpose")
+    user_id = payload.get("sub")
+    jti = payload.get("jti")
+    if not user_id or not jti:
+        raise HTTPException(status_code=401, detail="Invalid token")
+    if db.query(models.RevokedToken).filter(models.RevokedToken.jti == jti).first():
+        raise HTTPException(status_code=401, detail="Token has been invalidated")
+    user = db.query(models.User).filter(models.User.id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="User not found")
+    if int(payload.get("ver", -1)) != int(user.token_version or 0):
+        raise HTTPException(status_code=401, detail="Token has been invalidated")
+    return user, payload
+
 
 def get_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> Optional[models.User]:
     if not credentials:
         return None
-    token = credentials.credentials
-    payload = decode_access_token(token)
-    user_id: str = payload.get("sub")
-    if not user_id:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid token")
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="User not found")
+    user, _ = _resolve_token_user(credentials, db, expected_purpose="access")
+    if user.first_login:
+        raise HTTPException(status_code=403, detail="Password change required")
     return user
+
 
 def require_current_user(
     credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ) -> models.User:
     if not credentials:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Not authenticated")
     user = get_current_user(credentials, db)
     if not user:
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Not authenticated")
+        raise HTTPException(status_code=401, detail="Not authenticated")
     return user
 
-def require_role(*allowed_roles):
-    def role_checker(user: models.User = Depends(require_current_user)) -> models.User:
-        user_roles = [user.role]
-        if user.is_hod:
-            user_roles.append("hod")
-        if not any(r in allowed_roles for r in user_roles):
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Access forbidden: insufficient role permissions"
+
+def require_password_setup_user(
+    credentials: Optional[HTTPAuthorizationCredentials] = Security(security),
+    db: Session = Depends(get_db),
+) -> models.User:
+    if not credentials:
+        raise HTTPException(status_code=401, detail="Password setup token required")
+    user, _ = _resolve_token_user(credentials, db, expected_purpose="password_setup")
+    if not user.first_login:
+        raise HTTPException(status_code=409, detail="Password setup is already complete")
+    return user
+
+
+def revoke_presented_token(
+    credentials: HTTPAuthorizationCredentials,
+    user: models.User,
+    db: Session,
+    *,
+    reason: str,
+) -> None:
+    payload = decode_access_token(credentials.credentials)
+    expires_at = datetime.fromtimestamp(payload["exp"], timezone.utc).replace(tzinfo=None)
+    if not db.query(models.RevokedToken).filter(models.RevokedToken.jti == payload["jti"]).first():
+        db.add(
+            models.RevokedToken(
+                jti=payload["jti"],
+                user_id=user.id,
+                expires_at=expires_at,
+                reason=reason,
             )
+        )
+
+
+def require_role(*allowed_roles: str):
+    def role_checker(user: models.User = Depends(require_current_user)) -> models.User:
+        user_roles = {user.role}
+        if user.is_hod:
+            user_roles.add("hod")
+        if user_roles.isdisjoint(allowed_roles):
+            raise HTTPException(status_code=403, detail="Access forbidden")
         return user
+
     return role_checker
 
+
 def check_account_lockout(user: models.User) -> None:
-    """Checks if account is locked out per FR-AUTH-006."""
-    if user.locked_until and user.locked_until > datetime.utcnow():
-        remaining = int((user.locked_until - datetime.utcnow()).total_seconds() / 60) + 1
+    if user.locked_until and user.locked_until > utc_now():
         raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Account is temporarily locked due to consecutive failed attempts. Please try again in {remaining} minute(s)."
+            status_code=403,
+            detail="Account is temporarily locked. Please try again later.",
         )
 
+
 def record_failed_attempt(user: models.User, db: Session) -> None:
-    user.failed_login_attempts += 1
+    user.failed_login_attempts = int(user.failed_login_attempts or 0) + 1
     if user.failed_login_attempts >= MAX_FAILED_LOGIN_ATTEMPTS:
-        user.locked_until = datetime.utcnow() + timedelta(minutes=ACCOUNT_LOCKOUT_MINUTES)
-        # Log lockout
-        audit = models.AuditLog(
-            user_id=user.id,
-            action="ACCOUNT_LOCKED",
-            resource="User",
-            details=f"Account locked for {ACCOUNT_LOCKOUT_MINUTES} minutes after {user.failed_login_attempts} failed attempts."
+        user.locked_until = utc_now() + timedelta(minutes=ACCOUNT_LOCKOUT_MINUTES)
+        db.add(
+            models.AuditLog(
+                user_id=user.id,
+                action="ACCOUNT_LOCKED",
+                resource="User",
+                details="Account locked after repeated failed authentication attempts.",
+            )
         )
-        db.add(audit)
     db.commit()
+
 
 def record_successful_login(user: models.User, db: Session) -> None:
     user.failed_login_attempts = 0
     user.locked_until = None
-    audit = models.AuditLog(
-        user_id=user.id,
-        action="LOGIN_SUCCESS",
-        resource="User",
-        details="User authenticated successfully."
+    db.add(
+        models.AuditLog(
+            user_id=user.id,
+            action="LOGIN_SUCCESS",
+            resource="User",
+            details="User authenticated successfully.",
+        )
     )
-    db.add(audit)
     db.commit()

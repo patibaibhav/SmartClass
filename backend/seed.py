@@ -1,12 +1,16 @@
 import json
-import sys
-from datetime import datetime
+import argparse
 from database import engine, Base, SessionLocal
 import models
 from auth import generate_salt, hash_password
+from config import APP_ENV
 
-def seed_database(reset: bool = True):
+def seed_database(reset: bool = False, confirm_reset: bool = False):
     if reset:
+        if APP_ENV not in {"development", "test"}:
+            raise RuntimeError("Destructive demo reset is disabled outside development/test")
+        if not confirm_reset:
+            raise RuntimeError("Destructive demo reset requires explicit confirmation")
         print("Dropping existing tables to ensure clean schema...")
         Base.metadata.drop_all(bind=engine)
     
@@ -14,6 +18,13 @@ def seed_database(reset: bool = True):
     Base.metadata.create_all(bind=engine)
     
     db = SessionLocal()
+
+    if not reset and db.query(models.User).first():
+        db.close()
+        raise RuntimeError(
+            "Refusing to seed a populated database. Use the idempotent college importer, "
+            "or explicitly reset a development database."
+        )
 
     print("Seeding SmartClass database with initial records...")
 
@@ -335,8 +346,8 @@ def seed_database(reset: bool = True):
     attempt1 = models.QuizAttempt(
         quiz_id="Q001",
         student_id="STU001",
-        started_at=datetime.utcnow(),
-        submitted_at=datetime.utcnow(),
+        started_at=models.utc_now(),
+        submitted_at=models.utc_now(),
         answers_json=json.dumps({"1": 1, "2": 3, "3": 0, "4": 0, "5": 1, "6": 1, "7": 1, "8": 1, "9": 0, "10": 1}),
         score=7.0,
         total_marks=10.0,
@@ -458,5 +469,14 @@ def seed_database(reset: bool = True):
     db.close()
 
 if __name__ == "__main__":
-    reset = "--no-reset" not in sys.argv
-    seed_database(reset=reset)
+    parser = argparse.ArgumentParser(description="Create isolated SmartClass demonstration data")
+    parser.add_argument("--reset", action="store_true", help="Drop all tables first (development/test only)")
+    parser.add_argument(
+        "--confirm-reset",
+        choices=["DROP-DEMO-DATA"],
+        help="Required confirmation phrase when --reset is used",
+    )
+    args = parser.parse_args()
+    if args.reset and args.confirm_reset != "DROP-DEMO-DATA":
+        parser.error("--reset requires --confirm-reset DROP-DEMO-DATA")
+    seed_database(reset=args.reset, confirm_reset=args.confirm_reset == "DROP-DEMO-DATA")

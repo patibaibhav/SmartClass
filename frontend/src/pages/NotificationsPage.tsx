@@ -1,7 +1,16 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Bell, CheckCheck, PenSquare, HelpCircle, ClipboardList, Megaphone, Clock, Calendar } from 'lucide-react';
 import { Card, Badge, Button, SectionHeader } from '../components/ui';
-import { NOTIFICATIONS } from '../data/mock';
+import { api } from '../services/api';
+
+interface NotificationItem {
+  id: string;
+  message: string;
+  type: string;
+  read: boolean;
+  time: string;
+  icon: string;
+}
 
 const NOTIF_ICONS: Record<string, React.ElementType> = {
   assignment: PenSquare,
@@ -20,10 +29,23 @@ const TYPE_COLORS: Record<string, string> = {
 };
 
 export default function NotificationsPage() {
-  const [notifications, setNotifications] = useState(NOTIFICATIONS);
+  const [notifications, setNotifications] = useState<NotificationItem[]>([]);
+  const [error, setError] = useState('');
 
-  function markAllRead() {
+  useEffect(() => {
+    api.getNotifications().then(setNotifications).catch(err => setError(err.message));
+  }, []);
+
+  async function markAllRead() {
+    await Promise.all(notifications.filter(notification => !notification.read).map(notification => api.markNotificationRead(notification.id)));
     setNotifications(ns => ns.map(n => ({ ...n, read: true })));
+  }
+
+  async function markRead(id: string) {
+    const notification = notifications.find(item => item.id === id);
+    if (!notification || notification.read) return;
+    await api.markNotificationRead(id);
+    setNotifications(items => items.map(item => item.id === id ? { ...item, read: true } : item));
   }
 
   const unread = notifications.filter(n => !n.read).length;
@@ -42,6 +64,8 @@ export default function NotificationsPage() {
         )}
       </div>
 
+      {error && <Card className="p-4 text-sm text-[#b04040]">{error}</Card>}
+
       <div className="space-y-2">
         {notifications.map(n => {
           const Icon = NOTIF_ICONS[n.icon] || Bell;
@@ -50,7 +74,7 @@ export default function NotificationsPage() {
               key={n.id}
               className={`p-4 flex items-start gap-3 ${!n.read ? 'border-l-4' : ''}`}
               style={!n.read ? { borderLeftColor: TYPE_COLORS[n.type] || '#E8E2D0' } as React.CSSProperties : undefined}
-              onClick={() => setNotifications(ns => ns.map(x => x.id === n.id ? { ...x, read: true } : x))}
+              onClick={() => void markRead(n.id)}
             >
               <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: TYPE_COLORS[n.type] + '30' }}>
                 <Icon size={15} style={{ color: n.type === 'warning' ? '#9a6000' : n.type === 'info' ? '#2a6a82' : n.type === 'danger' ? '#b04040' : '#7a6a55' }} />

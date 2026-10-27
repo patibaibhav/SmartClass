@@ -1,7 +1,19 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { Paperclip, Plus, Megaphone } from 'lucide-react';
 import { Card, Badge, Button, Tabs, SectionHeader, EmptyState, Modal, Input, Avatar } from '../components/ui';
-import { ANNOUNCEMENTS } from '../data/mock';
+import { api } from '../services/api';
+
+interface AnnouncementItem {
+  id: string;
+  title: string;
+  publisher: string;
+  publisherRole: string;
+  date: string;
+  audience: string;
+  content: string;
+  attachment?: string | null;
+  type: string;
+}
 
 interface Props {
   role?: string;
@@ -9,12 +21,32 @@ interface Props {
 
 export default function AnnouncementsPage({ role = 'student' }: Props) {
   const [tab, setTab] = useState('All');
-  const [selected, setSelected] = useState<typeof ANNOUNCEMENTS[0] | null>(null);
+  const [announcements, setAnnouncements] = useState<AnnouncementItem[]>([]);
+  const [selected, setSelected] = useState<AnnouncementItem | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
   const [title, setTitle] = useState('');
+  const [content, setContent] = useState('');
+  const [audience, setAudience] = useState('College');
+  const [error, setError] = useState('');
+
+  useEffect(() => {
+    api.getAnnouncements().then(setAnnouncements).catch(err => setError(err.message));
+  }, []);
+
+  async function createAnnouncement() {
+    try {
+      await api.createAnnouncement({ title, content, audience, type: 'College' });
+      setAnnouncements(await api.getAnnouncements());
+      setCreateOpen(false);
+      setTitle('');
+      setContent('');
+    } catch (err: any) {
+      setError(err.message || 'Unable to publish the announcement.');
+    }
+  }
 
   const types = ['All', 'College', 'Course', 'Events'];
-  const filtered = ANNOUNCEMENTS.filter(a => tab === 'All' || a.type === tab);
+  const filtered = announcements.filter(a => tab === 'All' || a.type === tab);
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
@@ -29,6 +61,8 @@ export default function AnnouncementsPage({ role = 'student' }: Props) {
       />
 
       <Tabs tabs={types} active={tab} onChange={setTab} />
+
+      {error && <Card className="p-4 text-sm text-[#b04040]">{error}</Card>}
 
       {selected ? (
         <div className="space-y-4">
@@ -90,15 +124,13 @@ export default function AnnouncementsPage({ role = 'student' }: Props) {
             <Input label="Title" value={title} onChange={setTitle} placeholder="Announcement title" required />
             <div>
               <label className="text-xs font-semibold text-[#4a3a2a] uppercase tracking-wider block mb-1">Audience</label>
-              <select className="w-full px-4 py-2.5 rounded-xl border border-[#E8E2D0] bg-[#F4F1E6] text-sm focus:outline-none focus:ring-2 focus:ring-[#7DB7C9] appearance-none">
-                <option>SE-A (My Class)</option>
-                <option>CS301 — Data Structures (My Course)</option>
-                <option>College-wide</option>
+              <select value={audience} onChange={event => setAudience(event.target.value)} className="w-full px-4 py-2.5 rounded-xl border border-[#E8E2D0] bg-[#F4F1E6] text-sm focus:outline-none focus:ring-2 focus:ring-[#7DB7C9] appearance-none">
+                <option value="College">College-wide</option>
               </select>
             </div>
             <div>
               <label className="text-xs font-semibold text-[#4a3a2a] uppercase tracking-wider block mb-1">Message</label>
-              <textarea rows={4} className="w-full px-4 py-2.5 rounded-xl border border-[#E8E2D0] bg-[#F4F1E6] text-sm focus:outline-none focus:ring-2 focus:ring-[#7DB7C9] resize-none" placeholder="Write your announcement..." />
+              <textarea value={content} onChange={event => setContent(event.target.value)} rows={4} className="w-full px-4 py-2.5 rounded-xl border border-[#E8E2D0] bg-[#F4F1E6] text-sm focus:outline-none focus:ring-2 focus:ring-[#7DB7C9] resize-none" placeholder="Write your announcement..." />
             </div>
             <div className="border-2 border-dashed border-[#E8E2D0] rounded-xl p-4 text-center cursor-pointer hover:border-[#7DB7C9] transition-colors">
               <Paperclip size={16} className="text-[#7a6a55] mx-auto mb-1" />
@@ -106,7 +138,7 @@ export default function AnnouncementsPage({ role = 'student' }: Props) {
             </div>
             <div className="flex gap-2 justify-end">
               <Button variant="secondary" onClick={() => setCreateOpen(false)}>Cancel</Button>
-              <Button variant="primary" onClick={() => setCreateOpen(false)}>Post Announcement</Button>
+              <Button variant="primary" onClick={() => void createAnnouncement()}>Post Announcement</Button>
             </div>
           </div>
         </Modal>

@@ -6,7 +6,7 @@ import {
   GraduationCap, Settings, Bell, Search, ChevronDown,
   LogOut, UserCircle, Shield, Zap, Menu, X, Star
 } from 'lucide-react';
-import type { Role, User } from '../data/mock';
+import type { Role, User } from '../types';
 import { Avatar } from './ui';
 
 type Page =
