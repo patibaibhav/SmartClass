@@ -1,74 +1,42 @@
 import React, { useEffect, useState } from 'react';
-import { ChevronRight, CheckCircle, Clock, AlertTriangle, FileText } from 'lucide-react';
-import { Card, Badge, Tabs, SectionHeader, EmptyState } from '../components/ui';
+import { AlertTriangle, CheckCircle, ChevronRight, Clock, PenSquare, Plus } from 'lucide-react';
+import { Badge, Button, Card, EmptyState, Input, Modal, SectionHeader, Tabs } from '../components/ui';
 import { api } from '../services/api';
 
-interface AssignmentItem {
-  id: string;
-  title: string;
-  course: string;
-  courseCode: string;
-  dueDate: string;
-  marks: number;
-  status: string;
-  description: string;
-  submittedAt?: string | null;
-  submissionFile?: string | null;
-  obtainedMarks?: number | null;
-  feedback?: string | null;
-}
-
-interface Props { role?: string; }
+interface Props { role?: string }
+const dueDefault = new Date(Date.now() + 7 * 86400000).toISOString().slice(0, 10);
+const blank = { class_id: '', course_id: '', title: '', description: '', due_date: dueDefault, marks: 20, allow_late: true };
 
 export default function AssignmentsPage({ role = 'student' }: Props) {
   const [tab, setTab] = useState('All');
-  const [assignments, setAssignments] = useState<AssignmentItem[]>([]);
-  const [detail, setDetail] = useState<AssignmentItem | null>(null);
+  const [assignments, setAssignments] = useState<any[]>([]);
+  const [detail, setDetail] = useState<any>(null);
+  const [submissions, setSubmissions] = useState<any[]>([]);
+  const [submissionText, setSubmissionText] = useState('');
+  const [gradeDrafts, setGradeDrafts] = useState<Record<number, { marks: string; feedback: string }>>({});
+  const [createOpen, setCreateOpen] = useState(false);
+  const [classes, setClasses] = useState<any[]>([]);
+  const [courses, setCourses] = useState<any[]>([]);
+  const [form, setForm] = useState<any>(blank);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  async function load() { setAssignments(await api.getAssignments()); }
+  useEffect(() => { load().catch(e => setError(e.message)); if (role !== 'student') Promise.all([api.getClasses(),api.getCourses()]).then(([c,s]) => {setClasses(c);setCourses(s);}).catch(e => setError(e.message)); }, [role]);
 
-  useEffect(() => {
-    api.getAssignments().then(setAssignments).catch(err => setError(err.message));
-  }, []);
-
-  const tabs = role === 'student' ? ['All', 'Pending', 'Submitted', 'Graded', 'Late'] : ['All', 'Open', 'Graded'];
-  const filtered = assignments.filter(assignment => tab === 'All' || assignment.status === tab.toLowerCase());
-  const statusMap: Record<string, any> = { pending: 'pending', submitted: 'submitted', graded: 'graded', late: 'late', open: 'pending' };
-
-  if (detail) {
-    return (
-      <div className="p-6 max-w-4xl mx-auto space-y-4">
-        <button onClick={() => setDetail(null)} className="text-sm text-[#2F4F3A] font-semibold hover:underline">← Back to assignments</button>
-        <Card className="p-6 space-y-4">
-          <div className="flex items-center gap-2"><Badge variant={statusMap[detail.status] || 'pending'}>{detail.status}</Badge><span className="text-xs text-[#9a8a75]">{detail.courseCode} · {detail.marks} marks</span></div>
-          <h2 className="text-lg font-bold text-[#1a2e1e]">{detail.title}</h2>
-          <p className="text-xs text-[#7a6a55] flex items-center gap-1"><Clock size={12} /> Due {detail.dueDate}</p>
-          <p className="text-sm text-[#3a2e1a] border-t border-[#E8E2D0] pt-4">{detail.description}</p>
-          {detail.submittedAt && <div className="bg-[#e6f4ec] rounded-xl p-4"><p className="text-sm font-semibold text-[#1a6b3c] flex items-center gap-2"><CheckCircle size={15} />Submitted</p><p className="text-xs mt-1">{detail.submittedAt}</p>{detail.submissionFile && <p className="text-xs mt-1 flex items-center gap-1"><FileText size={11} />{detail.submissionFile}</p>}</div>}
-          {detail.status === 'graded' && <div className="bg-[#F5EBD7] rounded-xl p-4"><p className="text-2xl font-bold text-[#2F4F3A]">{detail.obtainedMarks}/{detail.marks}</p><p className="text-sm mt-2">{detail.feedback}</p></div>}
-          {role === 'student' && detail.status === 'pending' && <p className="text-sm text-[#7a6a55]">Online file submission remains disabled until private persistent object storage is configured.</p>}
-        </Card>
-      </div>
-    );
+  async function open(item: any) {
+    setDetail(item); setError(''); setMessage(''); setSubmissionText(item.submissionText || '');
+    if (role !== 'student') {
+      try { const rows = await api.getAssignmentSubmissions(item.id); setSubmissions(rows); setGradeDrafts(Object.fromEntries(rows.map((row: any) => [row.id,{marks:String(row.obtainedMarks ?? ''),feedback:row.feedback || ''}]))); }
+      catch (e: any) { setError(e.message); }
+    }
   }
+  async function submit() { try { await api.submitAssignment(detail.id, submissionText); setMessage('Submission saved and is now visible to faculty.'); await load(); setDetail((await api.getAssignments()).find(item => item.id === detail.id)); } catch (e: any) { setError(e.message); } }
+  async function grade(row: any) { const draft=gradeDrafts[row.id]; try { await api.gradeSubmission(row.id, Number(draft.marks), draft.feedback); setMessage('Grade and feedback saved.'); await open(detail); await load(); } catch (e: any) { setError(e.message); } }
+  async function create() { try { await api.createAssignment({...form,marks:Number(form.marks)}); setCreateOpen(false);setForm(blank);setMessage('Assignment published to the authorized class.');await load(); } catch(e:any){setError(e.message);} }
 
-  return (
-    <div className="p-6 max-w-4xl mx-auto space-y-6">
-      <SectionHeader title="Assignments" sub={role === 'student' ? 'Track recorded assignments and feedback' : 'Assignments for your authorized courses'} />
-      <Tabs tabs={tabs} active={tab} onChange={setTab} />
-      {error && <Card className="p-4 text-sm text-[#b04040]">{error}</Card>}
-      <div className="space-y-3">
-        {!filtered.length && !error ? <EmptyState icon={CheckCircle} message="No assignments." sub="No database records match this category." /> : filtered.map(assignment => (
-          <Card key={assignment.id} className="p-5 flex items-center gap-4" onClick={() => setDetail(assignment)}>
-            <div className="flex-1 min-w-0">
-              <div className="flex items-center gap-2 mb-1"><Badge variant={statusMap[assignment.status] || 'pending'}>{assignment.status}</Badge><span className="text-xs text-[#9a8a75]">{assignment.courseCode}</span>{assignment.status === 'late' && <AlertTriangle size={13} className="text-[#D98282]" />}</div>
-              <p className="text-sm font-semibold text-[#1a2e1e]">{assignment.title}</p>
-              <p className="text-xs text-[#7a6a55] mt-0.5">Due {assignment.dueDate} · {assignment.marks} marks</p>
-            </div>
-            {assignment.status === 'graded' && <p className="text-lg font-bold text-[#2F4F3A]">{assignment.obtainedMarks}/{assignment.marks}</p>}
-            <ChevronRight size={16} className="text-[#9a8a75]" />
-          </Card>
-        ))}
-      </div>
-    </div>
-  );
+  const tabs = role === 'student' ? ['All','Pending','Submitted','Graded','Late'] : ['All','Open','Graded'];
+  const filtered = assignments.filter(item => tab === 'All' || item.status === tab.toLowerCase());
+  if (detail) return <div className="p-6 max-w-5xl mx-auto space-y-4"><button onClick={() => setDetail(null)} className="text-sm text-[#2F4F3A] font-semibold">← Back to assignments</button>{error && <Card className="p-4 text-[#b04040]">{error}</Card>}{message && <Card className="p-4 text-[#1a6b3c]">{message}</Card>}<Card className="p-6 space-y-4"><div className="flex items-center gap-2"><Badge variant={detail.status}>{detail.status}</Badge><span className="text-xs text-[#9a8a75]">{detail.courseCode} · {detail.marks} marks</span></div><h2 className="text-lg font-bold">{detail.title}</h2><p className="text-xs text-[#7a6a55]"><Clock size={12} className="inline"/> Due {detail.dueDate}</p><p className="text-sm border-t border-[#E8E2D0] pt-4">{detail.description}</p>{role === 'student' && <>{detail.status === 'graded' && <div className="bg-[#e6f4ec] rounded-xl p-4"><p className="text-2xl font-bold">{detail.obtainedMarks}/{detail.marks}</p><p className="text-sm">{detail.feedback}</p></div>}<textarea rows={6} value={submissionText} onChange={e => setSubmissionText(e.target.value)} placeholder="Enter your assignment response" className="w-full px-4 py-3 rounded-xl border bg-[#F4F1E6]"/><Button onClick={submit} disabled={!submissionText.trim()}>{detail.submittedAt ? 'Update submission' : 'Submit assignment'}</Button></>}</Card>{role !== 'student' && <Card className="overflow-hidden"><div className="p-5 border-b"><h3 className="font-bold">Student submissions</h3><p className="text-xs text-[#7a6a55]">{submissions.length} recorded submission(s)</p></div><div className="space-y-4 p-5">{submissions.map(row => <div key={row.id} className="p-4 rounded-xl bg-[#F4F1E6] space-y-3"><div className="flex justify-between"><div><p className="font-semibold">{row.studentName}</p><p className="text-xs text-[#7a6a55]">{row.studentId} · {row.submittedAt}</p></div><Badge variant={row.status}>{row.status}</Badge></div><p className="text-sm whitespace-pre-wrap">{row.submissionText || row.submissionFile || 'No readable response'}</p><div className="grid sm:grid-cols-[120px_1fr_auto] gap-3"><input type="number" min="0" max={detail.marks} value={gradeDrafts[row.id]?.marks || ''} onChange={e => setGradeDrafts(current => ({...current,[row.id]:{...current[row.id],marks:e.target.value}}))} placeholder={`/${detail.marks}`} className="px-3 py-2 rounded-xl border"/><input value={gradeDrafts[row.id]?.feedback || ''} onChange={e => setGradeDrafts(current => ({...current,[row.id]:{...current[row.id],feedback:e.target.value}}))} placeholder="Feedback" className="px-3 py-2 rounded-xl border"/><Button onClick={() => grade(row)} disabled={!gradeDrafts[row.id]?.marks}>Save grade</Button></div></div>)}{!submissions.length && <EmptyState icon={CheckCircle} message="No submissions yet."/>}</div></Card>}</div>;
+
+  return <div className="p-6 max-w-5xl mx-auto space-y-6"><SectionHeader title="Assignments" sub={role === 'student' ? 'Submit work and review faculty feedback' : 'Publish assignments and grade shared submissions'} action={role !== 'student' ? <Button onClick={() => setCreateOpen(true)}><Plus size={14}/>New assignment</Button> : undefined}/>{error && <Card className="p-4 text-[#b04040]">{error}</Card>}{message && <Card className="p-4 text-[#1a6b3c]">{message}</Card>}<Tabs tabs={tabs} active={tab} onChange={setTab}/><div className="space-y-3">{filtered.map(item => <Card key={item.id} className="p-5 flex items-center gap-4" onClick={() => open(item)}><div className="flex-1"><div className="flex gap-2 mb-1"><Badge variant={item.status === 'open' ? 'pending' : item.status}>{item.status}</Badge><span className="text-xs text-[#9a8a75]">{item.courseCode} · {item.classId}</span>{item.status === 'late' && <AlertTriangle size={13}/>}</div><p className="font-semibold text-sm">{item.title}</p><p className="text-xs text-[#7a6a55]">Due {item.dueDate} · {item.marks} marks{role !== 'student' ? ` · ${item.submissionCount} submissions · ${item.pendingToGrade} to grade` : ''}</p></div>{item.status === 'graded' && <p className="font-bold">{item.obtainedMarks}/{item.marks}</p>}<ChevronRight size={16}/></Card>)}{!filtered.length && !error && <EmptyState icon={PenSquare} message="No assignments."/>}</div>{createOpen && <Modal title="Publish assignment" onClose={() => setCreateOpen(false)}><div className="space-y-4"><select value={form.class_id} onChange={e => setForm({...form,class_id:e.target.value})} className="w-full px-4 py-2.5 rounded-xl border bg-[#F4F1E6]"><option value="">Select class</option>{classes.map(item => <option key={item.id} value={item.id}>{item.id}</option>)}</select><select value={form.course_id} onChange={e => setForm({...form,course_id:e.target.value})} className="w-full px-4 py-2.5 rounded-xl border bg-[#F4F1E6]"><option value="">Select course</option>{courses.map(item => <option key={item.id} value={item.id}>{item.code} · {item.name}</option>)}</select><Input label="Title" value={form.title} onChange={value => setForm({...form,title:value})}/><textarea rows={4} value={form.description} onChange={e => setForm({...form,description:e.target.value})} placeholder="Description" className="w-full px-4 py-3 rounded-xl border bg-[#F4F1E6]"/><div className="grid grid-cols-2 gap-3"><Input label="Due date" type="date" value={form.due_date} onChange={value => setForm({...form,due_date:value})}/><Input label="Marks" type="number" value={String(form.marks)} onChange={value => setForm({...form,marks:value})}/></div><label className="flex gap-2 text-sm"><input type="checkbox" checked={form.allow_late} onChange={e => setForm({...form,allow_late:e.target.checked})}/>Allow late submissions</label><Button className="w-full justify-center" onClick={create} disabled={!form.class_id || !form.course_id || !form.title || !form.description}>Publish</Button></div></Modal>}</div>;
 }

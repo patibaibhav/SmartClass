@@ -140,8 +140,10 @@ export default function TimetablePage({ role, onAddLecture }: Props) {
                           <div key={i} className="rounded-xl p-2.5 border-l-4 mb-1 text-xs" style={{
                             background: TYPE_COLORS[l.type as LectureType] || TYPE_COLORS.Regular,
                             borderLeftColor: TYPE_BORDER[l.type as LectureType] || TYPE_BORDER.Regular,
+                            minHeight: `${Math.max(64, (l.durationMinutes || 60) * 1.05)}px`,
                           }}>
                             <p className="font-semibold text-[#1a2e1e] leading-snug">{l.course}</p>
+                            <p className="text-[#5a4a35] mt-0.5">{l.startTime}–{l.endTime}{l.durationMinutes > 60 ? ` · ${l.durationMinutes / 60}h block` : ''}</p>
                             <p className="text-[#7a6a55] mt-0.5">{l.room || 'Room not provided'}</p>
                             <p className="text-[#9a8a75]">{l.faculty || 'Faculty not provided'}</p>
                             {l.batches?.length ? <p className="text-[#9a8a75]">{l.batches.join(', ')}</p> : null}

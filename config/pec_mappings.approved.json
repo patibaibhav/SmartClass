@@ -1,0 +1,17 @@
+{
+  "version": 1,
+  "pecBatchByCourse": {
+    "CSS": "A",
+    "SSD": "B",
+    "DWM": "C"
+  },
+  "studentOverrides": [
+    {
+      "classId": "D12C",
+      "rollNo": "29",
+      "courseId": "SSD",
+      "batchCode": "B",
+      "reason": "Approved by the project owner on 2026-10-28"
+    }
+  ]
+}

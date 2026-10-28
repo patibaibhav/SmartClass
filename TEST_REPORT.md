@@ -1,13 +1,13 @@
 # SmartClass Test Report
 
-Updated: 2026-10-27
+Updated: 2026-10-28
 
 ## Verified checks
 
 | Check | Command | Result |
 |---|---|---|
-| Backend regression/security suite | `python -m pytest backend/test_backend.py -q` | 13 passed in 10.54s. One non-functional warning: pytest could not write `.pytest_cache` because of workspace permissions. |
-| Frontend production build | `npm.cmd run build` from `frontend` | Passed; 1,956 modules, JS bundle 233.32 kB (73.88 kB gzip). Vite warns that the inherited config uses `__dirname` and a JSON import unsupported by its planned native loader. |
+| Backend regression/security suite | `python -m pytest backend/test_backend.py -q` | 20 passed in 10.80s. One harmless local pytest cache-permission warning. |
+| Frontend production build | `npm.cmd run build` from `frontend` | Passed; 1,956 modules, JS bundle 233.62 kB (73.96 kB gzip). Native config compatibility warning resolved. |
 | Python syntax | `python -m py_compile ...` for backend and data scripts | Passed. |
 | Migration cycle | Alembic `upgrade head`, `downgrade base`, `upgrade head` against a fresh temporary SQLite database | Passed for all three revisions. Temporary database removed. |
 | Workbook validation | `validate_college_excel.py` | Completed; it identified the four decision categories before approval. |
@@ -16,8 +16,19 @@ Updated: 2026-10-27
 | Academic calendar import | `import_academic_calendar.py --apply` | Passed: 81 dated entries from the approved Odd Semester 2026–27 calendar. |
 | Synthetic academic generation | `seed_demo_academics.py --semester-start 2026-08-03 --semester-end 2026-11-18 --seed 2026 --apply` | Passed: 603 lectures, 57,568 attendance records, 48 assignments/quizzes, 3,079 submissions, and 3,328 attempts. Verification found zero demo lectures on excluded calendar dates and every demo lecture/attendance row has generation provenance. |
 | Diff whitespace check | `git diff --check` | Passed; line-ending conversion notices only. |
+| PEC validation/import | `python scripts/import_pec_data.py --file docs/pec.xlsx --apply` | 208 valid enrollments, 0 unmatched, 0 name mismatches, 0 unresolved conflicts; D12C roll 29 resolved to SSD/Batch B and 9 raw timetable inconsistencies retained for audit. |
+| Final demo quiz seed | `python scripts/seed_demo_quizzes.py --apply` | 8 released quizzes, 64 curated questions, 24 shared class memberships; 48 older synthetic duplicates archived without deletion. |
+| Live API smoke | Authenticated HTTP requests against `127.0.0.1:8000` | Faculty and HOD dashboard, quizzes, lectures, assignments, and attendance endpoints returned 200. Frontend returned 200 on port 8443. |
 
 ## Automated scenarios covered
+
+- Ambiguous 12-hour source normalization and vertically merged two-hour timetable duration.
+- PEC-specific CSS/SSD lecture isolation plus PEC-derived practical batch isolation for students in the same class.
+- Faculty quiz question/answer inspection, student submission, persisted scoring, and faculty attempt visibility.
+- Faculty assignment publishing, student text submission, faculty grading/feedback, and updated student view.
+- Faculty attendance marking, correction, student history update, and attendance audit creation.
+- Classroom occupied, adjacent, and cancelled interval behavior.
+- HOD grievance resolution/audit and department dashboard authorization.
 
 - Generic failed-login responses and successful login.
 - First-login setup-token restriction and password policy.
@@ -37,7 +48,7 @@ Updated: 2026-10-27
 - Browser automation across every role. The frontend production compiler passed, but no Playwright/Cypress suite exists.
 - Browser-level verification across all roles and imported data, including timetable visibility and generated academic records.
 - Persistent study-material upload/download; intentionally disabled pending private object storage and malware/content validation.
-- Faculty roster-editing UI. Backend lecture/attendance endpoints are authorized and validated, while the current page exposes verified summaries and defaulters only.
+- Browser-driven UI automation remains unavailable; the faculty roster editor compiles and its APIs have integration coverage, but final visual acceptance is manual.
 - Admin CRUD screens. Fake actions were removed; safe importer/migrations exist, but production CRUD endpoints are not implemented.
 
 No unrun scenario is reported as passed.

@@ -1,6 +1,19 @@
 # SmartClass Data Import Report
 
-Updated: 2026-10-27
+Updated: 2026-10-28
+
+## PEC import validation
+
+`docs/pec.xlsx` is private and Git-ignored. The idempotent importer matched by academic class plus roll number and validated each source name against the existing student identity.
+
+- Source rows: 209 for 208 unique class/roll keys.
+- Imported: all 208 enrollments.
+- Counts: CSS/Batch A 33, SSD/Batch B 92, DWM/Batch C 83.
+- Unmatched identities: 0. Name mismatches: 0. Duplicate identities created: 0.
+- Resolved source conflict: D12C roll 29 appears twice with different choices; the project owner approved SSD/Batch B on 2026-10-28. The decision is recorded in `config/pec_mappings.approved.json` and applied idempotently.
+- Practical grouping rule: a student's PEC determines their practical batch (CSS=A, SSD=B, DWM=C). Every batch-labelled practical is filtered by that batch. For PEC practical cells whose raw subject label disagrees with the batch, the student's selected PEC is displayed; all nine source inconsistencies remain in the local report for audit.
+
+The detailed local report is `docs/pec-import-report.local.json` (private and Git-ignored).
 
 ## Source audit
 

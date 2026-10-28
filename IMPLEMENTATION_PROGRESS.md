@@ -1,12 +1,24 @@
 # SmartClass Implementation Progress
 
-Updated: 2026-10-27
+Updated: 2026-10-28
 
 ## Current phase
+
+Final integration is substantially implemented. Personalized PEC timetables, normalized afternoon/duration handling, complete dashboards, faculty attendance editing, assignment text submission/grading, shared demonstration quizzes, and working HOD analytics/grievance handling are integrated. Automated API coverage increased to 20 passing tests and live Faculty/HOD API smoke checks pass.
 
 Phases 1–5 and deployment preparation are substantially complete. Approved identities and all 100 timetable occurrences are imported into the development database and an idempotent rerun created no duplicates. Phase 6 still requires explicit semester dates before synthetic academics can be generated. Phases 7/9 remain partial because browser E2E, PostgreSQL verification, Admin CRUD, Faculty roster editing, and object storage are outstanding.
 
 ## Completed and verified
+
+- Added normalized PEC enrollment storage and an idempotent `pec.xlsx` validator/importer. Imported all 208 selections (CSS 33, SSD 92, DWM 83); D12C roll 29 is resolved to SSD/Batch B through an audited owner-approved override.
+- Personalized student timetables, course lists, forums, materials, attendance rosters, assignments, quizzes, and results by academic class plus PEC course/batch.
+- Fixed source time normalization (`01:30` is now `13:30`) and vertically merged two-hour timetable cells. All 100 official occurrences were safely re-imported in place.
+- Added full student/faculty dashboard sections and database-derived HOD department analytics.
+- Added faculty lecture roster loading, complete attendance marking, reopening/correction, and audit persistence in the frontend.
+- Added assignment publishing, text submission, faculty submission review, grading, feedback, and student result display.
+- Added one released shared demonstration quiz per subject, each with eight curated questions. The 48 older synthetic duplicates remain as unreleased history rather than being deleted.
+- Fixed Faculty Quiz authorization while preserving object-level class/course scope; faculty can inspect questions, correct answers, and student attempts.
+- Added working HOD grievance status/resolution controls with audit logs.
 
 - Audited the repository, full implementation plan, relevant SRS requirements/business rules/NFRs, and all five workbook sheets.
 - Added privacy-safe workbook validation and a strict timetable parser that retains cell-level provenance.
@@ -39,14 +51,12 @@ Phases 1–5 and deployment preparation are substantially complete. Approved ide
 
 ## Incomplete work
 
-- Implement the faculty roster editor against the existing lecture/attendance APIs.
 - Implement Admin CRUD APIs/UI or formally limit administration to audited imports.
 - Add private object-storage upload/download, file-type/size checks, access control, and scanning.
 - Add browser E2E tests for all roles and three classes.
-- Add student-to-batch membership if batch-practical attendance must be generated.
-- Address the Vite native-config compatibility warning inherited from `.figma` configuration.
+- Add a faculty quiz-authoring UI (authorized quiz inspection, attempts, and curated demo quizzes are functional).
 - Review remaining partial/missing SRS items in `SRS_COMPLIANCE_MATRIX.md` before release acceptance.
 
 ## Exact next step
 
-Run regression tests and role/browser verification against the imported development data. Do not mark the project complete before those steps.
+Run browser automation/manual UI acceptance across Student, Faculty, and HOD roles, including an SSD/Batch B timetable check for D12C roll 29.

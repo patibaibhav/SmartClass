@@ -21,6 +21,7 @@ class UserResponse(BaseModel):
 
     id: str
     name: str
+    firstName: Optional[str] = None
     email: Optional[str] = None
     role: str
     isHOD: Optional[bool] = False
@@ -79,7 +80,8 @@ class AssignmentCreateRequest(BaseModel):
     attachment_file: Optional[str] = None
 
 class AssignmentSubmitRequest(BaseModel):
-    submission_file: str
+    submission_file: Optional[str] = None
+    submission_text: Optional[str] = None
 
 class GradeSubmissionRequest(BaseModel):
     marks: float

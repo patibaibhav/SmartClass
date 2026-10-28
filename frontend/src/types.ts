@@ -3,6 +3,7 @@ export type Role = 'student' | 'faculty' | 'admin' | 'council';
 export interface User {
   id: string;
   name: string;
+  firstName?: string;
   email?: string | null;
   role: Role;
   isHOD?: boolean;

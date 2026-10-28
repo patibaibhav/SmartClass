@@ -12,20 +12,22 @@ Requirements: Python 3.11+, Node.js 20+, and PostgreSQL for a production-like se
 python -m venv .venv
 .venv\Scripts\Activate.ps1
 pip install -r backend/requirements.txt
-Copy-Item backend/.env.example backend/.env
+$env:APP_ENV = "development"
+Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
 python -m alembic -c backend/alembic.ini upgrade head
 
 Set-Location frontend
 npm install
-Copy-Item .env.example .env
 ```
 
-Set the environment variables in `backend/.env` in your shell or process manager. The application does not load that file implicitly.
+The commands above use the local SQLite development database. Environment files are not loaded implicitly; production variables must be configured in the shell or hosting process manager. The frontend defaults to `http://127.0.0.1:8000/api` in development, so its `.env` file is optional.
 
 Run the services in separate terminals:
 
 ```powershell
 Set-Location backend
+$env:APP_ENV = "development"
+Remove-Item Env:DATABASE_URL -ErrorAction SilentlyContinue
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 ```
 
@@ -33,6 +35,16 @@ python -m uvicorn main:app --host 127.0.0.1 --port 8000 --reload
 Set-Location frontend
 npm run dev
 ```
+
+After the private workbooks have been validated, the local data workflow is:
+
+```powershell
+python scripts/import_pec_data.py --file docs/pec.xlsx --output docs/pec-import-report.local.json
+python scripts/import_pec_data.py --file docs/pec.xlsx --apply --output docs/pec-import-report.local.json
+python scripts/seed_demo_quizzes.py --apply
+```
+
+The PEC importer uses `config/pec_mappings.approved.json` for audited conflict decisions. It returns a non-zero status if a source conflict has no approved decision, while still importing unambiguous rows and recording the blocker in the local report.
 
 ## College-data workflow
 

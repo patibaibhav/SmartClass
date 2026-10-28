@@ -17,8 +17,11 @@ __pycache__/
 *.db
 *.sqlite3
 docs/data.xlsx
+docs/pec.xlsx
+docs/~$pec.xlsx
 docs/validation-report.local.json
 docs/timetable-parse.local.json
+docs/pec-import-report.local.json
 backend/uploads/
 *credentials*.csv
 *credential-manifest*

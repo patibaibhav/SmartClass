@@ -63,7 +63,43 @@ def parse_time(value: Any) -> tuple[str, str] | None:
     if not match:
         return None
     start_hour, start_minute, end_hour, end_minute = (int(part) for part in match.groups())
+    if not (0 <= start_minute < 60 and 0 <= end_minute < 60):
+        return None
+
+    # The supplied timetable omits AM/PM. Its teaching day begins at 08:30,
+    # so 01:30, 02:30 and 03:30 are afternoon values. Preserve explicit
+    # 24-hour values while normalizing the ambiguous source format.
+    if 1 <= start_hour <= 3:
+        start_hour += 12
+    start_total = start_hour * 60 + start_minute
+    end_total = end_hour * 60 + end_minute
+    if end_total <= start_total:
+        end_hour += 12
+    if start_hour > 23 or end_hour > 23:
+        return None
     return f"{start_hour:02d}:{start_minute:02d}", f"{end_hour:02d}:{end_minute:02d}"
+
+
+def cell_time_range(worksheet: Any, row_number: int, column: int) -> tuple[str, str] | None:
+    """Return the full duration represented by a timetable cell.
+
+    Excel uses vertical merges for two-hour practicals. Only the top-left
+    cell carries the value, so its end time must come from the final merged
+    row rather than from the first one-hour slot.
+    """
+    base = parse_time(worksheet.cell(row_number, 5).value)
+    if not base:
+        return None
+    for merged in worksheet.merged_cells.ranges:
+        if (
+            merged.min_row == row_number
+            and merged.max_row > row_number
+            and merged.min_col <= column <= merged.max_col
+        ):
+            final_slot = parse_time(worksheet.cell(merged.max_row, 5).value)
+            if final_slot:
+                return base[0], final_slot[1]
+    return base
 
 
 def load_mappings(path: Path | None) -> dict[str, Any]:
@@ -196,14 +232,15 @@ def parse_timetable(workbook_path: Path, mapping_path: Path | None = None) -> di
         if day_match:
             current_day = day_match.group(1).title()
             continue
-        time_range = parse_time(worksheet.cell(row_number, 5).value)
-        if not current_day or not time_range:
+        row_time_range = parse_time(worksheet.cell(row_number, 5).value)
+        if not current_day or not row_time_range:
             continue
         for column, default_class in CLASS_COLUMNS.items():
             cell = worksheet.cell(row_number, column)
             raw = clean(cell.value)
             if not raw:
                 continue
+            time_range = cell_time_range(worksheet, row_number, column) or row_time_range
             items = split_items(raw)
             for item_index, item in enumerate(items):
                 occurrences.append(

@@ -74,6 +74,27 @@ class StudentRecord(Base):
     source = Column(String(30), nullable=False, default="manual")
     source_record_key = Column(String(150), nullable=True, unique=True)
 
+
+class ElectiveEnrollment(Base):
+    """A student's PEC selection without changing their academic division."""
+
+    __tablename__ = "elective_enrollments"
+    __table_args__ = (
+        UniqueConstraint("student_id", name="uq_elective_enrollment_student"),
+        UniqueConstraint("source_record_key", name="uq_elective_enrollment_source"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    student_id = Column(String(50), ForeignKey("students.id"), nullable=False, index=True)
+    academic_class_id = Column(String(50), ForeignKey("classes.id"), nullable=False, index=True)
+    course_id = Column(String(50), ForeignKey("courses.id"), nullable=False, index=True)
+    batch_code = Column(String(20), nullable=False)
+    source = Column(String(30), nullable=False, default="import")
+    source_sheet = Column(String(100), nullable=False)
+    source_row = Column(Integer, nullable=False)
+    source_record_key = Column(String(150), nullable=False)
+    created_at = Column(DateTime, default=utc_now)
+
 class Classroom(Base):
     __tablename__ = "classrooms"
 
@@ -275,7 +296,8 @@ class AssignmentSubmission(Base):
     student_id = Column(String(50), ForeignKey("users.id"), nullable=False)
     student_name = Column(String(100), nullable=True)
     submitted_at = Column(String(30), nullable=False)
-    submission_file = Column(String(255), nullable=False)
+    submission_file = Column(String(255), nullable=True)
+    submission_text = Column(Text, nullable=True)
     status = Column(String(20), default="submitted") # submitted, late, graded
     obtained_marks = Column(Float, nullable=True)
     feedback = Column(Text, nullable=True)
@@ -292,7 +314,7 @@ class Quiz(Base):
     course_id = Column(String(50), ForeignKey("courses.id"), nullable=False)
     course_name = Column(String(150), nullable=False)
     course_code = Column(String(20), nullable=False)
-    class_id = Column(String(50), ForeignKey("classes.id"), nullable=False)
+    class_id = Column(String(50), ForeignKey("classes.id"), nullable=True)
     title = Column(String(200), nullable=False)
     duration_minutes = Column(Integer, default=15)
     max_attempts = Column(Integer, nullable=False, default=1)
@@ -305,6 +327,17 @@ class Quiz(Base):
     source = Column(String(30), nullable=False, default="manual")
     is_demo = Column(Boolean, nullable=False, default=False)
     generation_version = Column(String(50), nullable=True)
+
+
+class QuizClassMembership(Base):
+    __tablename__ = "quiz_class_memberships"
+    __table_args__ = (
+        UniqueConstraint("quiz_id", "class_id", name="uq_quiz_class_membership"),
+    )
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    quiz_id = Column(String(50), ForeignKey("quizzes.id"), nullable=False, index=True)
+    class_id = Column(String(50), ForeignKey("classes.id"), nullable=False, index=True)
 
 class QuizQuestion(Base):
     __tablename__ = "quiz_questions"

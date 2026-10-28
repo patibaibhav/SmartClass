@@ -73,7 +73,7 @@ export default function App() {
     // Role-aware page rendering
     switch (currentPage) {
       case 'dashboard':
-        if (user!.role === 'student') return <StudentDashboard onNavigate={navigate} userName={user!.name} />;
+        if (user!.role === 'student') return <StudentDashboard onNavigate={navigate} userName={user!.firstName || user!.name} />;
         if (user!.role === 'faculty') return <FacultyDashboard onNavigate={navigate} userName={user!.name} isHOD={user!.isHOD} />;
         if (user!.role === 'admin') return <AdminDashboard onNavigate={navigate} currentPage="dashboard" />;
         if (user!.role === 'council') return <CouncilDashboard onNavigate={navigate} userName={user!.name} currentPage="dashboard" />;
@@ -95,7 +95,7 @@ export default function App() {
         return <AssignmentsPage role={user!.role} />;
 
       case 'quizzes':
-        return <QuizzesPage />;
+        return <QuizzesPage role={user!.role} />;
 
       case 'study-material':
         return <StudyMaterialPage role={user!.role} />;
@@ -134,7 +134,7 @@ export default function App() {
         return <AdminDashboard onNavigate={navigate} currentPage="admin-classes" />;
 
       case 'admin-analytics':
-        return <AdminDashboard onNavigate={navigate} currentPage="admin-analytics" />;
+        return <AdminDashboard onNavigate={navigate} currentPage="admin-analytics" isHOD={user!.isHOD} />;
 
       case 'admin-classrooms':
         return <ClassroomAvailabilityPage />;

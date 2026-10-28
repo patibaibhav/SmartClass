@@ -115,6 +115,7 @@ export const api = {
   },
 
   getClassrooms: () => request<any[]>('/classrooms'),
+  getClasses: () => request<any[]>('/academic/classes'),
   getCourses: () => request<any[]>('/academic/courses'),
   getMyClass: () => request<any>('/academic/my-class'),
 
@@ -154,6 +155,9 @@ export const api = {
   createLecture: (lectureData: any) =>
     request<any>('/lectures/create', { method: 'POST', body: JSON.stringify(lectureData) }),
 
+  getLectures: () => request<any[]>('/lectures'),
+  getLectureRoster: (lectureId: number) => request<any>(`/lectures/${lectureId}/roster`),
+
   markAttendance: (lectureId: number, attendance: { student_id: string; status: string }[]) =>
     request<any>('/attendance/mark', {
       method: 'POST',
@@ -162,14 +166,27 @@ export const api = {
 
   getAssignments: () => request<any[]>('/assignments'),
 
-  submitAssignment: (assignmentId: string, submissionFile: string) =>
+  createAssignment: (data: any) =>
+    request<any>('/assignments', { method: 'POST', body: JSON.stringify(data) }),
+
+  getAssignmentSubmissions: (assignmentId: string) =>
+    request<any[]>(`/assignments/${assignmentId}/submissions`),
+
+  submitAssignment: (assignmentId: string, submissionText: string, submissionFile?: string) =>
     request<any>(`/assignments/${assignmentId}/submit`, {
       method: 'POST',
-      body: JSON.stringify({ submission_file: submissionFile }),
+      body: JSON.stringify({ submission_text: submissionText, submission_file: submissionFile || null }),
+    }),
+
+  gradeSubmission: (submissionId: number, marks: number, feedback: string) =>
+    request<any>(`/assignments/submissions/${submissionId}/grade`, {
+      method: 'POST',
+      body: JSON.stringify({ marks, feedback }),
     }),
 
   getQuizzes: () => request<any[]>('/quizzes'),
   getQuizQuestions: (quizId: string) => request<any[]>(`/quizzes/${quizId}/questions`),
+  getQuizAttempts: (quizId: string) => request<any[]>(`/quizzes/${quizId}/attempts`),
   submitQuiz: (quizId: string, answers: Record<string, number>) =>
     request<any>(`/quizzes/${quizId}/submit`, {
       method: 'POST',
