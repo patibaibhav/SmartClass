@@ -7,7 +7,7 @@
 2. Preserve all working roles, routes and modules. No invented personal data, no fake faculty mappings, no silent omission of malformed rows. Keep synthetic academic metrics visibly labelled **Demonstration data**.
 3. Import data through repeatable, transactional, validated scripts; preserve identifiers across reruns. No automatic destructive migrations. Prefer Alembic with reviewed migrations and rollback/backup instructions.
 4. Treat real student/faculty identity, emails and phone numbers as personal data. For a public demo, get authorization and use a pseudonymized dataset instead. Do not publish a directory of passwords. No automatic emailing credentials without permission.
-5. Keep `frontend/` as deployed UI; `figma/` is a separate design/prototype tree. Audit differences, do not deploy both accidentally.
+5. Keep `frontend/` as the deployed UI and the single maintained frontend source tree.
 6. Every claimed completion requires code changes, tests and manual verification. Record unresolved ambiguities in a review report rather than guessing.
 
 ## 1. Observed architecture and verified findings
