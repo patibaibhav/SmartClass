@@ -51,7 +51,7 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   const response = await fetch(`${API_BASE}${path}`, {
     ...fetchOptions,
     headers: {
-      ...(fetchOptions.body ? { 'Content-Type': 'application/json' } : {}),
+      ...(fetchOptions.body && !(fetchOptions.body instanceof FormData) ? { 'Content-Type': 'application/json' } : {}),
       ...(authenticated && token ? { Authorization: `Bearer ${token}` } : {}),
       ...headers,
     },
@@ -151,6 +151,30 @@ export const api = {
   getFacultyAttendance: () => request<any>('/attendance/faculty'),
   getMaterials: (courseId?: string) =>
     request<any[]>(`/materials${courseId ? `?course_id=${encodeURIComponent(courseId)}` : ''}`),
+  uploadMaterial: (data: { courseId: string; unit: string; title: string; description: string; file: File }) => {
+    const form = new FormData();
+    form.append('course_id', data.courseId);
+    form.append('unit', data.unit);
+    form.append('title', data.title);
+    form.append('description', data.description);
+    form.append('file', data.file);
+    return request<any>('/materials/upload', { method: 'POST', body: form });
+  },
+  async downloadMaterial(materialId: string, filename: string) {
+    const token = getToken();
+    if (!token) throw new Error('Your session has expired. Please sign in again.');
+    const response = await fetch(`${API_BASE}/materials/${encodeURIComponent(materialId)}/download`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = (await response.json()).detail; } catch { /* use fallback */ }
+      throw new Error(detail || `Download failed (${response.status}).`);
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
+    URL.revokeObjectURL(url);
+  },
 
   createLecture: (lectureData: any) =>
     request<any>('/lectures/create', { method: 'POST', body: JSON.stringify(lectureData) }),

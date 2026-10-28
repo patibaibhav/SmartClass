@@ -81,3 +81,5 @@ npm run build
 ```
 
 See [TEST_REPORT.md](TEST_REPORT.md), [DATA_IMPORT_REPORT.md](DATA_IMPORT_REPORT.md), and [DEPLOYMENT_READINESS.md](DEPLOYMENT_READINESS.md) for verified results and remaining blockers.
+
+For the hosted Vercel + Render + Supabase release, follow [SMARTCLASS_VERCEL_RENDER_SUPABASE_DEPLOYMENT.md](SMARTCLASS_VERCEL_RENDER_SUPABASE_DEPLOYMENT.md) and complete [PRODUCTION_ENV_CHECKLIST.md](PRODUCTION_ENV_CHECKLIST.md) before deploying. The current classification is **CODE READY / CLOUD CONFIGURATION PENDING**: no cloud credentials or production deployment are included in this repository.

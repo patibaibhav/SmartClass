@@ -4,7 +4,7 @@ Updated: 2026-10-28
 
 ## Current phase
 
-Final integration is substantially implemented. Personalized PEC timetables, normalized afternoon/duration handling, complete dashboards, faculty attendance editing, assignment text submission/grading, shared demonstration quizzes, and working HOD analytics/grievance handling are integrated. Automated API coverage increased to 20 passing tests and live Faculty/HOD API smoke checks pass.
+Final integration is substantially implemented. Personalized PEC timetables, normalized afternoon/duration handling, complete dashboards, faculty attendance editing, assignment text submission/grading, shared demonstration quizzes, working HOD analytics/grievance handling, and private Supabase-backed study-material upload/download are integrated. Automated API coverage includes secure file authorization tests.
 
 Phases 1–5 and deployment preparation are substantially complete. Approved identities and all 100 timetable occurrences are imported into the development database and an idempotent rerun created no duplicates. Phase 6 still requires explicit semester dates before synthetic academics can be generated. Phases 7/9 remain partial because browser E2E, PostgreSQL verification, Admin CRUD, Faculty roster editing, and object storage are outstanding.
 
@@ -46,14 +46,14 @@ Phases 1–5 and deployment preparation are substantially complete. Approved ide
 
 ## Active blockers
 
-1. No PostgreSQL service was reachable at the configured local address, so PostgreSQL execution remains unverified.
+1. No Supabase PostgreSQL project/credentials were provided, so hosted PostgreSQL execution remains unverified.
 2. No private object-storage provider/credentials were authorized. Material upload is intentionally disabled.
 
 ## Incomplete work
 
 - Implement Admin CRUD APIs/UI or formally limit administration to audited imports.
 - Add private object-storage upload/download, file-type/size checks, access control, and scanning.
-- Add browser E2E tests for all roles and three classes.
+- Execute the prepared hosted smoke checklist and browser acceptance across all roles once cloud credentials are available.
 - Add a faculty quiz-authoring UI (authorized quiz inspection, attempts, and curated demo quizzes are functional).
 - Review remaining partial/missing SRS items in `SRS_COMPLIANCE_MATRIX.md` before release acceptance.
 

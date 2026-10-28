@@ -17,4 +17,14 @@ services:
         sync: false
       - key: STORAGE_BACKEND
         sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_SERVICE_ROLE_KEY
+        sync: false
+      - key: SUPABASE_STORAGE_BUCKET
+        value: smartclass-materials
+      - key: DATABASE_SSLMODE
+        value: verify-full
+      - key: MAX_UPLOAD_BYTES
+        value: "10485760"
 

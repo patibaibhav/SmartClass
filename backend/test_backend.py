@@ -18,7 +18,9 @@ from sqlalchemy.pool import StaticPool
 import models
 from auth import generate_salt, hash_password
 from database import Base, get_db
+import main as main_module
 from main import app
+from storage import StoredObject, validate_upload, StorageError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from timetable_parser import cell_time_range, parse_time  # noqa: E402
@@ -405,6 +407,50 @@ def test_unassigned_hod_faculty_is_not_given_department_assignments():
     assert dashboard.json()["assignedClasses"] == []
     assert dashboard.json()["assignedCourses"] == []
     assert dashboard.json()["todaySchedule"] == []
+
+
+def test_private_material_upload_and_download_authorization(monkeypatch):
+    class FakeStorage:
+        objects: dict[str, tuple[bytes, str]] = {}
+
+        def create_key(self, *, course_id: str, filename: str) -> str:
+            return f"materials/{course_id}/test-{filename}"
+
+        def upload(self, *, key: str, content: bytes, content_type: str) -> None:
+            self.objects[key] = (content, content_type)
+
+        def download(self, key: str) -> StoredObject:
+            content, content_type = self.objects[key]
+            return StoredObject(key=key, content=content, content_type=content_type)
+
+        def delete(self, key: str) -> None:
+            self.objects.pop(key, None)
+
+    fake_storage = FakeStorage()
+    monkeypatch.setattr(main_module, "get_storage", lambda: fake_storage)
+    upload = client.post(
+        "/api/materials/upload",
+        headers=auth(login("FAC-SM")),
+        data={"course_id": "TCS", "unit": "Unit 1", "title": "Secure notes", "description": ""},
+        files={"file": ("notes.pdf", b"%PDF-test", "application/pdf")},
+    )
+    assert upload.status_code == 201, upload.text
+    material_id = upload.json()["id"]
+    listed = client.get("/api/materials", headers=auth(login("STU-D12A-001")))
+    assert listed.status_code == 200
+    assert any(row["id"] == material_id and row["hasFile"] for row in listed.json())
+    download = client.get(f"/api/materials/{material_id}/download", headers=auth(login("STU-D12A-001")))
+    assert download.status_code == 200
+    assert download.content == b"%PDF-test"
+    denied = client.get(f"/api/materials/{material_id}/download", headers=auth(login("CON-001")))
+    assert denied.status_code == 403
+
+
+def test_upload_validation_rejects_unsafe_or_empty_files():
+    with pytest.raises(StorageError):
+        validate_upload("notes.exe", "application/octet-stream", b"binary")
+    with pytest.raises(StorageError):
+        validate_upload("notes.pdf", "application/pdf", b"")
 
 
 def test_time_normalization_and_merged_two_hour_duration():

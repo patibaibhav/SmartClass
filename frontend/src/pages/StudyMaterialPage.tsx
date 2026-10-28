@@ -1,10 +1,10 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { FileText, ExternalLink, Upload } from 'lucide-react';
+import { FileText, ExternalLink, Upload, Download } from 'lucide-react';
 import { Card, Badge, Button, SectionHeader, EmptyState } from '../components/ui';
 import { api } from '../services/api';
 
 interface Props { role?: string }
-type Material = { id: string; course: string; unit: string; title: string; type: string; size?: string; uploadedAt?: string; description?: string };
+type Material = { id: string; course: string; unit: string; title: string; type: string; size?: string; uploadedAt?: string; description?: string; hasFile?: boolean; fileName?: string | null };
 
 export default function StudyMaterialPage({ role = 'student' }: Props) {
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -12,26 +12,38 @@ export default function StudyMaterialPage({ role = 'student' }: Props) {
   const [selectedCourse, setSelectedCourse] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [upload, setUpload] = useState({ courseId: '', unit: '', title: '', description: '', file: null as File | null });
 
-  useEffect(() => {
-    Promise.all([api.getMaterials(), api.getCourses()]).then(([m, c]) => {
+  async function load() {
+    const [m, c] = await Promise.all([api.getMaterials(), api.getCourses()]);
       setMaterials(m); setCourses(c);
       if (m.length) setSelectedCourse(m[0].course);
-    }).catch(e => setError(e.message)).finally(() => setLoading(false));
-  }, []);
+  }
+  useEffect(() => { load().catch(e => setError(e.message)).finally(() => setLoading(false)); }, []);
+  async function submitUpload() {
+    if (!upload.file) return;
+    try {
+      setError(''); await api.uploadMaterial({ ...upload, file: upload.file });
+      setMessage('Material uploaded successfully.'); setUploadOpen(false);
+      setUpload({ courseId: '', unit: '', title: '', description: '', file: null }); await load();
+    } catch (e: any) { setError(e.message); }
+  }
 
   const visible = selectedCourse ? materials.filter(m => m.course === selectedCourse) : materials;
   const units = useMemo(() => [...new Set(visible.map(m => m.unit))], [visible]);
 
   return <div className="p-6 max-w-5xl mx-auto space-y-6">
-    <SectionHeader title="Study Material" sub="Authorized course resources from the database" action={role === 'faculty' ? <Button variant="secondary" disabled title="Persistent object storage is not configured"><Upload size={14}/> Upload unavailable</Button> : undefined} />
-    {role === 'faculty' && <p className="text-xs text-[#7a6a55]">Uploads are intentionally disabled until private persistent object storage and file scanning are configured.</p>}
+    <SectionHeader title="Study Material" sub="Authorized course resources from the database" action={role === 'faculty' ? <Button variant="secondary" onClick={() => setUploadOpen(true)}><Upload size={14}/> Upload material</Button> : undefined} />
+    {error && <Card className="p-4 text-[#b04040]">{error}</Card>}{message && <Card className="p-4 text-[#1a6b3c]">{message}</Card>}
     <div className="flex gap-2 flex-wrap"><button onClick={() => setSelectedCourse('')} className={`px-4 py-2 rounded-xl text-sm ${!selectedCourse ? 'bg-[#2F4F3A] text-white' : 'bg-[#E8E2D0]'}`}>All</button>{courses.filter(c => materials.some(m => m.course === c.id)).map(c => <button key={c.id} onClick={() => setSelectedCourse(c.id)} className={`px-4 py-2 rounded-xl text-sm ${selectedCourse === c.id ? 'bg-[#2F4F3A] text-white' : 'bg-[#E8E2D0]'}`}>{c.code}</button>)}</div>
     {loading ? <p>Loading materials…</p> : error ? <Card className="p-4 text-[#b04040]">{error}</Card> : units.length === 0 ? <EmptyState icon={FileText} message="No study materials are available for your courses." /> : units.map(unit => <section key={unit} className="space-y-3">
       <h3 className="text-sm font-bold border-b pb-2">{unit}</h3>
       <div className="grid sm:grid-cols-2 gap-3">{visible.filter(m => m.unit === unit).map(m => <Card key={m.id} className="p-4 flex gap-3">
         <FileText size={20} className="text-[#2F4F3A] shrink-0"/><div className="flex-1"><p className="text-sm font-semibold">{m.title}</p><p className="text-xs text-[#7a6a55] mt-1">{m.description || 'No description provided'}</p><div className="flex gap-2 mt-2"><Badge variant="default">{m.type}</Badge>{m.size && <span className="text-xs">{m.size}</span>}</div></div>
-        {m.type === 'LINK' && <ExternalLink size={14}/>}</Card>)}</div>
+        {m.hasFile ? <button title="Download material" onClick={() => api.downloadMaterial(m.id, m.fileName || m.title).catch(e => setError(e.message))}><Download size={16}/></button> : m.type === 'LINK' && <ExternalLink size={14}/>}</Card>)}</div>
     </section>)}
+    {uploadOpen && <Modal title="Upload study material" onClose={() => setUploadOpen(false)}><div className="space-y-4"><select value={upload.courseId} onChange={e => setUpload({...upload,courseId:e.target.value})} className="w-full px-4 py-2.5 rounded-xl border bg-[#F4F1E6]"><option value="">Select authorized course</option>{courses.map(c => <option key={c.id} value={c.id}>{c.code} · {c.name}</option>)}</select><input value={upload.unit} onChange={e => setUpload({...upload,unit:e.target.value})} placeholder="Unit" className="w-full px-4 py-2.5 rounded-xl border"/><input value={upload.title} onChange={e => setUpload({...upload,title:e.target.value})} placeholder="Title" className="w-full px-4 py-2.5 rounded-xl border"/><textarea value={upload.description} onChange={e => setUpload({...upload,description:e.target.value})} placeholder="Description (optional)" className="w-full px-4 py-2.5 rounded-xl border"/><input type="file" accept=".pdf,.doc,.docx,.ppt,.pptx,.txt" onChange={e => setUpload({...upload,file:e.target.files?.[0] || null})}/><p className="text-xs text-[#7a6a55]">PDF, Word, PowerPoint, or text; maximum 10 MB.</p><Button className="w-full justify-center" onClick={submitUpload} disabled={!upload.courseId || !upload.unit || !upload.title || !upload.file}>Upload</Button></div></Modal>}
   </div>;
 }

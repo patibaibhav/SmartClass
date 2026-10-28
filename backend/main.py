@@ -1,12 +1,15 @@
 import json
 import os
 import uuid
+import logging
+import time
 from datetime import datetime, timedelta, timezone
 from typing import Optional, List, Dict, Any
 
-from fastapi import FastAPI, Depends, HTTPException, status, Query, Security
+from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
+from fastapi.responses import Response
 from sqlalchemy import or_, text
 from sqlalchemy.orm import Session
 
@@ -23,8 +26,9 @@ from auth import (
 )
 from config import (
     CORS_ORIGINS, DEFAULT_LOW_ATTENDANCE_THRESHOLD,
-    REMEMBER_TOKEN_EXPIRE_MINUTES
+    REMEMBER_TOKEN_EXPIRE_MINUTES, SUPABASE_STORAGE_BUCKET
 )
+from storage import StorageError, get_storage, validate_upload
 
 
 def utc_now() -> datetime:
@@ -72,6 +76,22 @@ def student_is_eligible_for_course(db: Session, user: models.User, course_id: st
         models.ClassCourse.class_id == user.class_id,
         models.ClassCourse.course_id == course_id,
     ).first())
+
+
+def faculty_is_assigned_to_course(db: Session, user: models.User, course_id: str) -> bool:
+    """HOD status provides analytics access, not an invented teaching assignment."""
+    return bool(db.query(models.ClassCourse).filter(
+        models.ClassCourse.faculty_id == user.id,
+        models.ClassCourse.course_id == course_id,
+    ).first())
+
+
+def can_access_material(db: Session, user: models.User, material: models.StudyMaterial) -> bool:
+    if user.role in {"admin", "council"}:
+        return False
+    if user.role == "student":
+        return student_is_eligible_for_course(db, user, material.course_id)
+    return faculty_is_assigned_to_course(db, user, material.course_id)
 
 
 def eligible_roster(
@@ -146,6 +166,7 @@ app = FastAPI(
     description="Integrated Academic and Classroom Management Platform API",
     version="1.0.0"
 )
+logger = logging.getLogger("smartclass.api")
 
 # CORS configuration
 app.add_middleware(
@@ -159,11 +180,22 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_security_headers(request, call_next):
-    response = await call_next(request)
+    started = time.perf_counter()
+    try:
+        response = await call_next(request)
+    except Exception:
+        # Do not include headers, bodies, tokens, or connection strings in logs.
+        logger.exception("unhandled_request_error method=%s path=%s", request.method, request.url.path)
+        raise
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     response.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    logger.info(
+        "request_complete method=%s path=%s status=%s duration_ms=%d",
+        request.method, request.url.path, response.status_code,
+        (time.perf_counter() - started) * 1000,
+    )
     return response
 
 # -------------------------------------------------------------
@@ -1223,6 +1255,12 @@ def list_study_materials(
     if course_id:
         query = query.filter(models.StudyMaterial.course_id == course_id)
     materials = query.all()
+    files_by_material = {
+        item.material_id: item
+        for item in db.query(models.StoredFile).filter(
+            models.StoredFile.material_id.in_([material.id for material in materials])
+        ).all()
+    } if materials else {}
     return [{
         "id": m.id,
         "course": m.course_id,
@@ -1232,8 +1270,119 @@ def list_study_materials(
         "size": m.file_size,
         "uploadedBy": m.uploaded_by,
         "uploadedAt": m.uploaded_at,
-        "description": m.description
+        "description": m.description,
+        "hasFile": m.id in files_by_material,
+        "fileName": files_by_material[m.id].original_filename if m.id in files_by_material else None,
     } for m in materials]
+
+
+@app.post("/api/materials/upload", status_code=status.HTTP_201_CREATED)
+async def upload_study_material(
+    course_id: str = Form(...),
+    unit: str = Form(...),
+    title: str = Form(...),
+    description: str = Form(""),
+    file: UploadFile = File(...),
+    user: models.User = Depends(require_role("faculty", "hod")),
+    db: Session = Depends(get_db),
+):
+    if not faculty_is_assigned_to_course(db, user, course_id):
+        raise HTTPException(status_code=403, detail="Faculty is not assigned to this course")
+    course = db.get(models.CourseModel, course_id)
+    if not course or not unit.strip() or not title.strip():
+        raise HTTPException(status_code=400, detail="Course, unit, and title are required")
+    content = await file.read()
+    try:
+        original_filename, content_type = validate_upload(file.filename or "", file.content_type or "", content)
+        storage = get_storage()
+        object_key = storage.create_key(course_id=course_id, filename=original_filename)
+        storage.upload(key=object_key, content=content, content_type=content_type)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+    material = models.StudyMaterial(
+        id=f"MAT-{uuid.uuid4().hex[:12].upper()}",
+        course_id=course_id,
+        unit=unit.strip(),
+        title=title.strip(),
+        file_type=original_filename.rsplit(".", 1)[-1].upper(),
+        file_size=f"{len(content) / 1024:.1f} KB",
+        uploaded_by=user.name,
+        uploaded_at=utc_now().strftime("%Y-%m-%dT%H:%M:%S"),
+        description=description.strip() or None,
+    )
+    stored_file = models.StoredFile(
+        id=f"FILE-{uuid.uuid4().hex[:12].upper()}",
+        bucket=SUPABASE_STORAGE_BUCKET,
+        object_key=object_key,
+        original_filename=original_filename,
+        content_type=content_type,
+        size_bytes=len(content),
+        uploaded_by_id=user.id,
+        course_id=course_id,
+        material_id=material.id,
+    )
+    try:
+        db.add(material)
+        db.add(stored_file)
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            storage.delete(object_key)
+        except StorageError:
+            pass
+        raise
+    return {"id": material.id, "message": "Study material uploaded successfully"}
+
+
+@app.get("/api/materials/{material_id}/download")
+def download_study_material(
+    material_id: str,
+    user: models.User = Depends(require_current_user),
+    db: Session = Depends(get_db),
+):
+    material = db.get(models.StudyMaterial, material_id)
+    if not material:
+        raise HTTPException(status_code=404, detail="Study material not found")
+    if not can_access_material(db, user, material):
+        raise HTTPException(status_code=403, detail="You are not authorized to download this material")
+    stored_file = db.query(models.StoredFile).filter_by(material_id=material_id).first()
+    if not stored_file:
+        raise HTTPException(status_code=404, detail="No downloadable file is attached to this material")
+    try:
+        stored = get_storage().download(stored_file.object_key)
+    except StorageError as exc:
+        status_code = 404 if "no longer available" in str(exc) else 503
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
+    safe_filename = stored_file.original_filename.replace('"', "")
+    return Response(
+        content=stored.content,
+        media_type=stored_file.content_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
+
+
+@app.delete("/api/materials/{material_id}")
+def delete_study_material(
+    material_id: str,
+    user: models.User = Depends(require_role("faculty", "hod")),
+    db: Session = Depends(get_db),
+):
+    material = db.get(models.StudyMaterial, material_id)
+    if not material:
+        raise HTTPException(status_code=404, detail="Study material not found")
+    stored_file = db.query(models.StoredFile).filter_by(material_id=material_id).first()
+    if not stored_file or stored_file.uploaded_by_id != user.id:
+        raise HTTPException(status_code=403, detail="Only the uploading faculty member may delete this material")
+    try:
+        get_storage().delete(stored_file.object_key)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    db.delete(stored_file)
+    db.delete(material)
+    db.commit()
+    return {"message": "Study material deleted"}
 
 # -------------------------------------------------------------
 # 7. ASSIGNMENT MANAGEMENT (FR-ASG-001 to 010)

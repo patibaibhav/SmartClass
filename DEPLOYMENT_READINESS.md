@@ -1,6 +1,6 @@
 # SmartClass Deployment Readiness
 
-Updated: 2026-10-28. No deployment was performed.
+Updated: 2026-10-28. No live deployment was performed.
 
 ## Intended architecture
 
@@ -9,7 +9,7 @@ Updated: 2026-10-28. No deployment was performed.
 - Database: managed PostgreSQL with TLS and backups.
 - Files: private persistent object storage. Local/ephemeral disk is not acceptable for production study materials.
 
-The architecture fits the current application, but deployment is blocked until PostgreSQL verification, object storage implementation, and the remaining SRS gaps are resolved or accepted. Timetable mappings are approved and verified in development.
+The repository is **CODE READY** for the stated architecture: PostgreSQL-only production configuration, Supabase private-storage integration, migration, upload authorization, and local regression coverage are present. It is **CLOUD CONFIGURATION PENDING** until Supabase, Render, and Vercel resources are configured and verified live. Timetable mappings are approved and verified in development.
 
 ## Backend configuration
 
@@ -26,7 +26,10 @@ Production startup validates its configuration and will not silently use SQLite.
 | `PASSWORD_SETUP_TOKEN_EXPIRE_MINUTES` | Recommended 15. |
 | `MAX_FAILED_LOGIN_ATTEMPTS` / `ACCOUNT_LOCKOUT_MINUTES` | Default 5 / 15 unless policy specifies otherwise. |
 | `LOW_ATTENDANCE_THRESHOLD` | 75 per current business rule. |
-| `STORAGE_BACKEND` | Must not be `local`; an object-storage adapter still needs implementation. |
+| `STORAGE_BACKEND` | Must be `supabase`. |
+| `DATABASE_SSLMODE` | `verify-full` (or `verify-ca` only when the provider supplies the required CA configuration). |
+| `SUPABASE_URL` / `SUPABASE_SERVICE_ROLE_KEY` | Backend-only Supabase project URL and service-role key. Never set in Vercel. |
+| `SUPABASE_STORAGE_BUCKET` | Private bucket, default `smartclass-materials`. |
 
 Build/install: `pip install -r backend/requirements.txt`
 
@@ -58,10 +61,12 @@ Build from `frontend`: `npm ci` then `npm run build`. Publish `frontend/dist`. C
 
 - Apply and verify the approved timetable mappings against managed PostgreSQL.
 - Verify migration, import, backup/restore, and representative queries on the chosen PostgreSQL service.
-- Implement and test private object storage before enabling material uploads.
-- Decide whether partial Admin CRUD is a release blocker; the Faculty attendance editor is implemented.
+- Create and test the private Supabase bucket with actual Render credentials; uploads are implemented but have not been provider-tested.
+- Admin CRUD is an accepted, explicit out-of-scope SRS exception for this deployment.
 - Review the nine retained raw PEC subject/batch inconsistencies as an audit item; runtime practical assignment follows the approved batch labels and CSS=A, SSD=B, DWM=C mapping.
 - Run browser-level tests for student, faculty, HOD, admin, and council roles.
 - Add centralized production logging/monitoring and an operational incident/secret-rotation procedure.
+
+See [SMARTCLASS_VERCEL_RENDER_SUPABASE_DEPLOYMENT.md](SMARTCLASS_VERCEL_RENDER_SUPABASE_DEPLOYMENT.md), [PRODUCTION_ENV_CHECKLIST.md](PRODUCTION_ENV_CHECKLIST.md), [PRODUCTION_SMOKE_TEST.md](PRODUCTION_SMOKE_TEST.md), and [BACKUP_AND_RECOVERY.md](BACKUP_AND_RECOVERY.md).
 
 The `.env.example` files contain placeholders only. The private workbook, credentials, `.env` files, SQLite databases, and upload directory are ignored by Git.

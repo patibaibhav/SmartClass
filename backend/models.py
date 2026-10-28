@@ -307,6 +307,27 @@ class AssignmentSubmission(Base):
     is_demo = Column(Boolean, nullable=False, default=False)
     generation_version = Column(String(50), nullable=True)
 
+
+class StoredFile(Base):
+    """Metadata for private objects; bytes always live outside the database."""
+
+    __tablename__ = "stored_files"
+    __table_args__ = (
+        UniqueConstraint("object_key", name="uq_stored_file_object_key"),
+        UniqueConstraint("material_id", name="uq_stored_file_material"),
+    )
+
+    id = Column(String(50), primary_key=True)
+    bucket = Column(String(100), nullable=False)
+    object_key = Column(String(500), nullable=False)
+    original_filename = Column(String(255), nullable=False)
+    content_type = Column(String(150), nullable=False)
+    size_bytes = Column(Integer, nullable=False)
+    uploaded_by_id = Column(String(50), ForeignKey("users.id"), nullable=False, index=True)
+    course_id = Column(String(50), ForeignKey("courses.id"), nullable=False, index=True)
+    material_id = Column(String(50), ForeignKey("study_materials.id"), nullable=True, index=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+
 class Quiz(Base):
     __tablename__ = "quizzes"
 
