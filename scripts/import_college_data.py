@@ -248,6 +248,7 @@ def apply_import(
 
             for record in students:
                 user, password = upsert_user(db, record, "student")
+                db.flush()
                 student = db.query(models.StudentRecord).filter(models.StudentRecord.id == user.id).first()
                 if not student:
                     student = models.StudentRecord(id=user.id)
@@ -268,7 +269,8 @@ def apply_import(
                 if password:
                     counts["accounts_created"] += 1
                     credentials.append({"user_id": user.id, "temporary_password": password, "role": "faculty"})
-
+            # Save pending faculty and student records before timetable references them
+            db.flush()
             if timetable_report:
                 workbook_hash = timetable_report["sourceWorkbookSha256"]
                 for parsed in timetable_report["occurrences"]:
@@ -379,9 +381,9 @@ def apply_import(
                     workbook_sha256=validation["source"]["sha256"],
                     source_filename=workbook_path.name,
                     status=(
-                        "identity-and-timetable-imported"
+                        "identity-timetable-imported"
                         if timetable_report
-                        else "identity-imported-timetable-pending-review"
+                        else "identity-pending-review"
                     ),
                     summary_json=json.dumps(counts, sort_keys=True),
                     completed_at=datetime.now(timezone.utc).replace(tzinfo=None),
