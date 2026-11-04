@@ -9,6 +9,7 @@ from typing import Any, Dict, Optional
 import jwt
 from fastapi import Depends, HTTPException, Security, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import exists
 from sqlalchemy.orm import Session
 
 import models
@@ -112,11 +113,14 @@ def _resolve_token_user(
     jti = payload.get("jti")
     if not user_id or not jti:
         raise HTTPException(status_code=401, detail="Invalid token")
-    if db.query(models.RevokedToken).filter(models.RevokedToken.jti == jti).first():
-        raise HTTPException(status_code=401, detail="Token has been invalidated")
-    user = db.query(models.User).filter(models.User.id == user_id).first()
-    if not user:
+    # One round trip: load the user and whether this token was revoked together.
+    revoked = exists().where(models.RevokedToken.jti == jti)
+    row = db.query(models.User, revoked).filter(models.User.id == user_id).first()
+    if not row:
         raise HTTPException(status_code=401, detail="User not found")
+    user, is_revoked = row
+    if is_revoked:
+        raise HTTPException(status_code=401, detail="Token has been invalidated")
     if int(payload.get("ver", -1)) != int(user.token_version or 0):
         raise HTTPException(status_code=401, detail="Token has been invalidated")
     return user, payload

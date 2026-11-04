@@ -10,7 +10,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, Up
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.responses import Response
-from sqlalchemy import or_, text
+from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
 from database import get_db
@@ -62,20 +62,44 @@ def serialize_user(user: models.User) -> dict[str, Any]:
     }
 
 
+def _request_cache(db: Session) -> dict:
+    """Per-request memo. get_db() opens one Session per request, so db.info is
+    request-scoped; this removes repeated identical lookups inside loops."""
+    return db.info.setdefault("_request_cache", {})
+
+
+_MISSING = object()
+
+
 def elective_for_student(db: Session, student_id: str) -> models.ElectiveEnrollment | None:
-    return db.query(models.ElectiveEnrollment).filter(
-        models.ElectiveEnrollment.student_id == student_id
-    ).first()
+    cache = _request_cache(db)
+    key = ("elective", student_id)
+    cached = cache.get(key, _MISSING)
+    if cached is _MISSING:
+        cached = db.query(models.ElectiveEnrollment).filter(
+            models.ElectiveEnrollment.student_id == student_id
+        ).first()
+        cache[key] = cached
+    return cached
+
+
+def class_course_ids(db: Session, class_id: str | None) -> set[str]:
+    cache = _request_cache(db)
+    key = ("class_courses", class_id)
+    if key not in cache:
+        cache[key] = {
+            row[0] for row in db.query(models.ClassCourse.course_id).filter(
+                models.ClassCourse.class_id == class_id
+            )
+        }
+    return cache[key]
 
 
 def student_is_eligible_for_course(db: Session, user: models.User, course_id: str) -> bool:
     if course_id in PEC_COURSE_IDS:
         enrollment = elective_for_student(db, user.id)
         return bool(enrollment and enrollment.course_id == course_id)
-    return bool(db.query(models.ClassCourse).filter(
-        models.ClassCourse.class_id == user.class_id,
-        models.ClassCourse.course_id == course_id,
-    ).first())
+    return course_id in class_course_ids(db, user.class_id)
 
 
 def faculty_is_assigned_to_course(db: Session, user: models.User, course_id: str) -> bool:
@@ -127,25 +151,37 @@ def eligible_roster(
     return students
 
 
+def _batch_codes_by_occurrence(db: Session, class_id: str | None) -> dict:
+    cache = _request_cache(db)
+    key = ("batch_groups", class_id)
+    if key not in cache:
+        grouped: dict = {}
+        for row in db.query(models.ScheduleBatchGroup).filter_by(class_id=class_id):
+            grouped.setdefault(row.occurrence_id, set()).add(row.batch_code)
+        cache[key] = grouped
+    return cache[key]
+
+
 def student_can_attend_lecture(db: Session, user: models.User, lecture: models.Lecture) -> bool:
     if lecture.schedule_occurrence_id:
-        batch_rows = db.query(models.ScheduleBatchGroup).filter_by(
-            occurrence_id=lecture.schedule_occurrence_id,
-            class_id=user.class_id,
-        ).all()
-        if batch_rows:
+        batch_codes = _batch_codes_by_occurrence(db, user.class_id).get(lecture.schedule_occurrence_id)
+        if batch_codes:
             enrollment = elective_for_student(db, user.id)
-            return bool(enrollment and enrollment.batch_code in {row.batch_code for row in batch_rows})
+            return bool(enrollment and enrollment.batch_code in batch_codes)
     return student_is_eligible_for_course(db, user, lecture.course_id)
 
 
 def quiz_class_ids(db: Session, quiz: models.Quiz) -> set[str]:
-    class_ids = {
-        row.class_id for row in db.query(models.QuizClassMembership).filter_by(quiz_id=quiz.id)
-    }
-    if quiz.class_id:
-        class_ids.add(quiz.class_id)
-    return class_ids
+    cache = _request_cache(db)
+    key = ("quiz_classes", quiz.id)
+    if key not in cache:
+        class_ids = {
+            row.class_id for row in db.query(models.QuizClassMembership).filter_by(quiz_id=quiz.id)
+        }
+        if quiz.class_id:
+            class_ids.add(quiz.class_id)
+        cache[key] = class_ids
+    return set(cache[key])
 
 
 def student_can_access_quiz(db: Session, user: models.User, quiz: models.Quiz) -> bool:
@@ -430,9 +466,19 @@ def get_my_class(
             if row.course_id not in PEC_COURSE_IDS or (elective and row.course_id == elective.course_id)
         ]
     courses_info = []
+    course_by_id = {
+        c.id: c for c in db.query(models.CourseModel).filter(
+            models.CourseModel.id.in_({cc.course_id for cc in cc_records})
+        )
+    } if cc_records else {}
+    faculty_by_id = {
+        u.id: u for u in db.query(models.User).filter(
+            models.User.id.in_({cc.faculty_id for cc in cc_records if cc.faculty_id})
+        )
+    } if cc_records else {}
     for cc in cc_records:
-        course = db.query(models.CourseModel).filter(models.CourseModel.id == cc.course_id).first()
-        faculty = db.query(models.User).filter(models.User.id == cc.faculty_id).first()
+        course = course_by_id.get(cc.course_id)
+        faculty = faculty_by_id.get(cc.faculty_id)
         if course:
             courses_info.append({
                 "id": course.id,
@@ -476,25 +522,31 @@ def get_student_attendance(
     courses = db.query(models.CourseModel).filter(models.CourseModel.id.in_(course_ids)).all() if course_ids else []
     result = []
 
+    # Bulk-load conducted lectures for all courses and the student's attendance
+    # in two queries instead of two queries per course.
+    all_lectures = db.query(models.Lecture).outerjoin(models.LectureClassMembership).filter(
+        models.Lecture.course_id.in_([c.id for c in courses]),
+        or_(
+            models.Lecture.class_id == user.class_id,
+            models.LectureClassMembership.class_id == user.class_id,
+        ),
+        models.Lecture.status == "Conducted",
+    ).distinct().all() if courses else []
+    lectures_by_course: dict = {}
+    for lecture in all_lectures:
+        if student_can_attend_lecture(db, user, lecture):
+            lectures_by_course.setdefault(lecture.course_id, []).append(lecture)
+    records_by_lecture = {
+        record.lecture_id: record
+        for record in db.query(models.Attendance).filter(
+            models.Attendance.student_id == student_id,
+            models.Attendance.lecture_id.in_([l.id for l in all_lectures]),
+        ).all()
+    } if all_lectures else {}
+
     for c in courses:
-        lectures = db.query(models.Lecture).outerjoin(models.LectureClassMembership).filter(
-            models.Lecture.course_id == c.id,
-            or_(
-                models.Lecture.class_id == user.class_id,
-                models.LectureClassMembership.class_id == user.class_id,
-            ),
-            models.Lecture.status == "Conducted"
-        ).distinct().all()
-        lectures = [lecture for lecture in lectures if student_can_attend_lecture(db, user, lecture)]
-        lec_ids = [l.id for l in lectures]
-        records = (
-            db.query(models.Attendance).filter(
-                models.Attendance.student_id == student_id,
-                models.Attendance.lecture_id.in_(lec_ids)
-            ).all()
-            if lec_ids
-            else []
-        )
+        lectures = lectures_by_course.get(c.id, [])
+        records = [records_by_lecture[l.id] for l in lectures if l.id in records_by_lecture]
         total = len(lectures)
         present = sum(1 for record in records if record.status == "Present")
         pct = round((present / total * 100), 1) if total else 0.0
@@ -936,6 +988,14 @@ def get_timetable(
             batches_by_occurrence.setdefault(batch.occurrence_id, []).append(
                 f"{batch.class_id}:{batch.batch_code}"
             )
+        course_by_id = {
+            c.id: c for c in db.query(models.CourseModel).all()
+        }
+        faculty_by_id = {
+            u.id: u for u in db.query(models.User).filter(
+                models.User.id.in_({o.faculty_id for o in occurrences if o.faculty_id})
+            )
+        }
         for occurrence in occurrences:
             display_course_id = occurrence.course_id
             if (
@@ -948,16 +1008,8 @@ def get_timetable(
                 # Show the student's selected PEC even when the source cell's
                 # subject label disagrees with its authoritative batch label.
                 display_course_id = elective.course_id
-            course = (
-                db.query(models.CourseModel).filter(models.CourseModel.id == display_course_id).first()
-                if display_course_id
-                else None
-            )
-            faculty = (
-                db.query(models.User).filter(models.User.id == occurrence.faculty_id).first()
-                if occurrence.faculty_id
-                else None
-            )
+            course = course_by_id.get(display_course_id) if display_course_id else None
+            faculty = faculty_by_id.get(occurrence.faculty_id) if occurrence.faculty_id else None
             grouped[occurrence.day_of_week].append({
                 "id": occurrence.id,
                 "time": f"{occurrence.start_time}–{occurrence.end_time}",
@@ -1447,15 +1499,32 @@ def list_assignments(
             if student_is_eligible_for_course(db, user, assignment.course_id)
         ]
     student_id = user.id if user.role == "student" else None
-    
+    assignment_ids = [a.id for a in assignments]
+    subs_by_assignment: dict = {}
+    count_by_assignment: dict = {}
+    pending_by_assignment: dict = {}
+    if assignment_ids:
+        if student_id:
+            for submission in db.query(models.AssignmentSubmission).filter(
+                models.AssignmentSubmission.assignment_id.in_(assignment_ids),
+                models.AssignmentSubmission.student_id == student_id,
+            ).order_by(models.AssignmentSubmission.id):
+                subs_by_assignment.setdefault(submission.assignment_id, submission)
+        else:
+            for assignment_id, status_name, n in db.query(
+                models.AssignmentSubmission.assignment_id,
+                models.AssignmentSubmission.status,
+                func.count(models.AssignmentSubmission.id),
+            ).filter(
+                models.AssignmentSubmission.assignment_id.in_(assignment_ids)
+            ).group_by(models.AssignmentSubmission.assignment_id, models.AssignmentSubmission.status):
+                count_by_assignment[assignment_id] = count_by_assignment.get(assignment_id, 0) + n
+                if status_name in ("submitted", "late"):
+                    pending_by_assignment[assignment_id] = pending_by_assignment.get(assignment_id, 0) + n
+
     results = []
     for a in assignments:
-        sub = None
-        if student_id:
-            sub = db.query(models.AssignmentSubmission).filter(
-                models.AssignmentSubmission.assignment_id == a.id,
-                models.AssignmentSubmission.student_id == student_id
-            ).first()
+        sub = subs_by_assignment.get(a.id) if student_id else None
 
         status_val = "pending" if user.role == "student" else "open"
         obtained_marks = None
@@ -1472,13 +1541,8 @@ def list_assignments(
             submission_file = sub.submission_file
             submission_text = sub.submission_text
 
-        submission_count = db.query(models.AssignmentSubmission).filter_by(
-            assignment_id=a.id
-        ).count() if user.role != "student" else None
-        pending_to_grade = db.query(models.AssignmentSubmission).filter(
-            models.AssignmentSubmission.assignment_id == a.id,
-            models.AssignmentSubmission.status.in_(["submitted", "late"]),
-        ).count() if user.role != "student" else None
+        submission_count = count_by_assignment.get(a.id, 0) if user.role != "student" else None
+        pending_to_grade = pending_by_assignment.get(a.id, 0) if user.role != "student" else None
         if user.role != "student" and submission_count and pending_to_grade == 0:
             status_val = "graded"
 
@@ -1660,11 +1724,22 @@ def list_quizzes(
         ]
     results = []
     now = utc_now()
+    quiz_ids = [q.id for q in quizzes]
+    question_counts = dict(
+        db.query(models.QuizQuestion.quiz_id, func.count(models.QuizQuestion.id))
+        .filter(models.QuizQuestion.quiz_id.in_(quiz_ids))
+        .group_by(models.QuizQuestion.quiz_id)
+        .all()
+    ) if quiz_ids else {}
+    attempt_counts = dict(
+        db.query(models.QuizAttempt.quiz_id, func.count(models.QuizAttempt.id))
+        .filter(models.QuizAttempt.quiz_id.in_(quiz_ids), models.QuizAttempt.student_id == user.id)
+        .group_by(models.QuizAttempt.quiz_id)
+        .all()
+    ) if quiz_ids and user.role == "student" else {}
     for q in quizzes:
-        question_count = db.query(models.QuizQuestion).filter(models.QuizQuestion.quiz_id == q.id).count()
-        attempts_used = db.query(models.QuizAttempt).filter_by(
-            quiz_id=q.id, student_id=user.id
-        ).count() if user.role == "student" else None
+        question_count = question_counts.get(q.id, 0)
+        attempts_used = attempt_counts.get(q.id, 0) if user.role == "student" else None
         try:
             opens_at = datetime.fromisoformat(q.opens_at)
             closes_at = datetime.fromisoformat(q.closes_at)
@@ -1974,38 +2049,56 @@ def get_results(
         if course_ids
         else []
     )
+    # Bulk-load everything once instead of several queries per course.
+    all_assignments = db.query(models.Assignment).filter(
+        models.Assignment.course_id.in_(course_ids),
+        models.Assignment.class_id == user.class_id,
+    ).all() if course_ids else []
+    assignments_by_course: dict = {}
+    for item in all_assignments:
+        assignments_by_course.setdefault(item.course_id, []).append(item)
+    graded_submissions: dict = {}
+    if all_assignments:
+        for sub in db.query(models.AssignmentSubmission).filter(
+            models.AssignmentSubmission.assignment_id.in_([a.id for a in all_assignments]),
+            models.AssignmentSubmission.student_id == user.id,
+            models.AssignmentSubmission.obtained_marks.isnot(None),
+        ).order_by(models.AssignmentSubmission.id):
+            graded_submissions.setdefault(sub.assignment_id, sub)
+    all_quizzes = db.query(models.Quiz).filter(
+        models.Quiz.course_id.in_(course_ids),
+        or_(
+            models.Quiz.class_id == user.class_id,
+            models.Quiz.id.in_(
+                db.query(models.QuizClassMembership.quiz_id).filter(
+                    models.QuizClassMembership.class_id == user.class_id
+                )
+            ),
+        ),
+    ).all() if course_ids else []
+    quizzes_by_course: dict = {}
+    for item in all_quizzes:
+        quizzes_by_course.setdefault(item.course_id, []).append(item)
+    attempts_by_quiz: dict = {}
+    if all_quizzes:
+        for attempt in db.query(models.QuizAttempt).filter(
+            models.QuizAttempt.quiz_id.in_([q.id for q in all_quizzes]),
+            models.QuizAttempt.student_id == user.id,
+        ).all():
+            attempts_by_quiz.setdefault(attempt.quiz_id, []).append(attempt)
+
     for course in courses:
-        assignments = db.query(models.Assignment).filter(
-            models.Assignment.course_id == course.id,
-            models.Assignment.class_id == user.class_id,
-        ).all()
+        assignments = assignments_by_course.get(course.id, [])
         assignment_percentages = []
         for assignment in assignments:
-            submission = db.query(models.AssignmentSubmission).filter(
-                models.AssignmentSubmission.assignment_id == assignment.id,
-                models.AssignmentSubmission.student_id == user.id,
-                models.AssignmentSubmission.obtained_marks.isnot(None),
-            ).first()
+            submission = graded_submissions.get(assignment.id)
             if submission and assignment.marks:
                 assignment_percentages.append(submission.obtained_marks / assignment.marks * 100)
 
-        quizzes = db.query(models.Quiz).filter(
-            models.Quiz.course_id == course.id,
-            or_(
-                models.Quiz.class_id == user.class_id,
-                models.Quiz.id.in_(
-                    db.query(models.QuizClassMembership.quiz_id).filter(
-                        models.QuizClassMembership.class_id == user.class_id
-                    )
-                ),
-            ),
-        ).all()
+        quizzes = quizzes_by_course.get(course.id, [])
         attempts = []
         for quiz in quizzes:
-            attempts.extend(db.query(models.QuizAttempt).filter(
-                models.QuizAttempt.quiz_id == quiz.id,
-                models.QuizAttempt.student_id == user.id,
-            ).all())
+            attempts.extend(attempts_by_quiz.get(quiz.id, []))
         attempts.sort(key=lambda attempt: attempt.submitted_at)
         quiz_percentages = [
             attempt.score / attempt.total_marks * 100
@@ -2035,6 +2128,77 @@ def get_results(
 # 11. DASHBOARDS (FR-DASH-001 to 005)
 # -------------------------------------------------------------
 
+def count_low_attendance_students(db: Session, students: list) -> int:
+    """Bulk equivalent of calling get_student_attendance() for every student and
+    counting those with any course below the threshold (total > 0)."""
+    if not students:
+        return 0
+    enrollment_by_student = {
+        e.student_id: e for e in db.query(models.ElectiveEnrollment).all()
+    }
+    courses_by_class: dict = {}
+    for class_id, course_id in db.query(models.ClassCourse.class_id, models.ClassCourse.course_id):
+        courses_by_class.setdefault(class_id, set()).add(course_id)
+    batch_codes: dict = {}
+    for row in db.query(models.ScheduleBatchGroup).all():
+        batch_codes.setdefault((row.class_id, row.occurrence_id), set()).add(row.batch_code)
+    lecture_classes: dict = {}
+    lectures: dict = {}
+    for lecture in db.query(models.Lecture).filter(models.Lecture.status == "Conducted"):
+        lectures[lecture.id] = lecture
+        if lecture.class_id:
+            lecture_classes.setdefault(lecture.id, set()).add(lecture.class_id)
+    for lecture_id, class_id in db.query(
+        models.LectureClassMembership.lecture_id, models.LectureClassMembership.class_id
+    ):
+        if lecture_id in lectures:
+            lecture_classes.setdefault(lecture_id, set()).add(class_id)
+    lectures_by_class: dict = {}
+    for lecture_id, class_ids in lecture_classes.items():
+        for class_id in class_ids:
+            lectures_by_class.setdefault(class_id, []).append(lectures[lecture_id])
+    present_pairs = {
+        (student_id, lecture_id)
+        for student_id, lecture_id in db.query(
+            models.Attendance.student_id, models.Attendance.lecture_id
+        ).filter(models.Attendance.status == "Present")
+    }
+    defaulters = 0
+    for student in students:
+        enrollment = enrollment_by_student.get(student.id)
+        class_courses = courses_by_class.get(student.class_id, set())
+        allowed = {
+            c for c in class_courses
+            if c not in PEC_COURSE_IDS or (enrollment and enrollment.course_id == c)
+        }
+        totals: dict = {}
+        presents: dict = {}
+        for lecture in lectures_by_class.get(student.class_id, []):
+            if lecture.course_id not in allowed:
+                continue
+            batches = (
+                batch_codes.get((student.class_id, lecture.schedule_occurrence_id))
+                if lecture.schedule_occurrence_id else None
+            )
+            if batches:
+                if not (enrollment and enrollment.batch_code in batches):
+                    continue
+            elif lecture.course_id in PEC_COURSE_IDS:
+                if not (enrollment and enrollment.course_id == lecture.course_id):
+                    continue
+            elif lecture.course_id not in class_courses:
+                continue
+            totals[lecture.course_id] = totals.get(lecture.course_id, 0) + 1
+            if (student.id, lecture.id) in present_pairs:
+                presents[lecture.course_id] = presents.get(lecture.course_id, 0) + 1
+        if any(
+            round(presents.get(c, 0) / total * 100, 1) < DEFAULT_LOW_ATTENDANCE_THRESHOLD
+            for c, total in totals.items() if total > 0
+        ):
+            defaulters += 1
+    return defaulters
+
+
 @app.get("/api/dashboard/stats")
 def get_dashboard_stats(
     role: Optional[str] = None,
@@ -2063,8 +2227,11 @@ def get_dashboard_stats(
         total_present = sum(values["present"] for values in class_counts.values())
         total_records = sum(values["total"] for values in class_counts.values())
         faculty_summaries = []
+        assigned_by_faculty: dict = {}
+        for item in db.query(models.ClassCourse).all():
+            assigned_by_faculty.setdefault(item.faculty_id, []).append(item)
         for faculty in db.query(models.User).filter_by(role="faculty").order_by(models.User.name):
-            assigned = db.query(models.ClassCourse).filter_by(faculty_id=faculty.id).all()
+            assigned = assigned_by_faculty.get(faculty.id, [])
             faculty_summaries.append({
                 "id": faculty.id,
                 "name": faculty.name,
@@ -2072,10 +2239,13 @@ def get_dashboard_stats(
                 "courses": len({item.course_id for item in assigned}),
             })
         performance = []
+        attempts_by_course: dict = {}
+        for course_id, attempt in db.query(models.Quiz.course_id, models.QuizAttempt).join(
+            models.Quiz, models.Quiz.id == models.QuizAttempt.quiz_id
+        ):
+            attempts_by_course.setdefault(course_id, []).append(attempt)
         for course in db.query(models.CourseModel).order_by(models.CourseModel.code):
-            attempts = db.query(models.QuizAttempt).join(
-                models.Quiz, models.Quiz.id == models.QuizAttempt.quiz_id
-            ).filter(models.Quiz.course_id == course.id).all()
+            attempts = attempts_by_course.get(course.id, [])
             percentages = [
                 attempt.score / attempt.total_marks * 100
                 for attempt in attempts if attempt.total_marks
@@ -2086,11 +2256,7 @@ def get_dashboard_stats(
                 "average": round(sum(percentages) / len(percentages), 1) if percentages else None,
                 "attempts": len(percentages),
             })
-        defaulter_count = sum(1 for student in students if any(
-            item["percentage"] < DEFAULT_LOW_ATTENDANCE_THRESHOLD
-            for item in get_student_attendance(user=db.get(models.User, student.id), db=db)["courses"]
-            if item["total"] > 0
-        ))
+        defaulter_count = count_low_attendance_students(db, students)
         return {
             "totalStudents": len(students),
             "totalFaculty": db.query(models.User).filter_by(role="faculty").count(),
@@ -2121,6 +2287,11 @@ def get_dashboard_stats(
         attendance_payload = get_faculty_attendance(user=user, db=db)
         assignments = db.query(models.ClassCourse).filter(models.ClassCourse.faculty_id == user.id)
         assignment_rows = assignments.all()
+        course_names = {
+            c.id: c.name for c in db.query(models.CourseModel).filter(
+                models.CourseModel.id.in_({i.course_id for i in assignment_rows})
+            )
+        } if assignment_rows else {}
         today = utc_now().strftime("%A")
         timetable = get_timetable(day=today, user=user, db=db)
         return {
@@ -2129,8 +2300,7 @@ def get_dashboard_stats(
             "assignedCourses": [{
                 "classId": item.class_id,
                 "courseId": item.course_id,
-                "courseName": (db.get(models.CourseModel, item.course_id).name
-                    if db.get(models.CourseModel, item.course_id) else item.course_id),
+                "courseName": course_names.get(item.course_id, item.course_id),
             } for item in assignment_rows],
             "todaySchedule": timetable.get(today, []),
             "defaulterSummary": attendance_payload["defaulters"][:8],

@@ -9,6 +9,8 @@ import sys
 from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from typing import Any
+from collections import defaultdict
+from sqlalchemy import insert
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -125,6 +127,30 @@ def generate(seed: int, semester_start: date, semester_end: date, apply: bool) -
         # above. End it before opening the single atomic write transaction.
         db.rollback()
         with db.begin():
+            # Prefetch stable reference data once instead of querying per lecture/student.
+            courses_by_id = {c.id: c for c in db.query(models.CourseModel).all()}
+            faculty_by_id = {u.id: u for u in db.query(models.User).all()}
+            students_by_class = defaultdict(list)
+            for student in db.query(models.StudentRecord).all():
+                students_by_class[student.class_id].append(student)
+            classes_by_occurrence = defaultdict(list)
+            for membership in db.query(models.ScheduleClassMembership).all():
+                classes_by_occurrence[membership.occurrence_id].append(membership.class_id)
+            existing_lectures = {
+                (lecture.schedule_occurrence_id, lecture.date): lecture
+                for lecture in db.query(models.Lecture).filter(
+                    models.Lecture.generation_version == version
+                ).all()
+            }
+            existing_attendance = defaultdict(set)
+            lecture_ids = [lecture.id for lecture in existing_lectures.values()]
+            if lecture_ids:
+                for lecture_id, student_id in db.query(
+                    models.Attendance.lecture_id, models.Attendance.student_id
+                ).filter(models.Attendance.lecture_id.in_(lecture_ids)).all():
+                    existing_attendance[lecture_id].add(student_id)
+            print(f"Loaded reference data; generating {len(scheduled_dates)} teaching dates...", flush=True)
+            processed_lectures = 0
             for current_date in scheduled_dates:
                 day_name = WEEKDAYS.get(current_date.weekday())
                 if not day_name:
@@ -132,14 +158,10 @@ def generate(seed: int, semester_start: date, semester_end: date, apply: bool) -
                 for occurrence in eligible_occurrences:
                     if occurrence.day_of_week != day_name:
                         continue
-                    lecture = db.query(models.Lecture).filter(
-                        models.Lecture.schedule_occurrence_id == occurrence.id,
-                        models.Lecture.date == current_date.isoformat(),
-                        models.Lecture.generation_version == version,
-                    ).first()
+                    lecture = existing_lectures.get((occurrence.id, current_date.isoformat()))
                     if not lecture:
-                        course = db.query(models.CourseModel).filter(models.CourseModel.id == occurrence.course_id).one()
-                        faculty = db.query(models.User).filter(models.User.id == occurrence.faculty_id).one()
+                        course = courses_by_id[occurrence.course_id]
+                        faculty = faculty_by_id[occurrence.faculty_id]
                         lecture = models.Lecture(
                             schedule_occurrence_id=occurrence.id,
                             class_id=None,
@@ -163,48 +185,55 @@ def generate(seed: int, semester_start: date, semester_end: date, apply: bool) -
                         db.add(lecture)
                         db.flush()
                     counts["lectures"] += 1
-                    class_ids = [
-                        row.class_id for row in db.query(models.ScheduleClassMembership).filter(
-                            models.ScheduleClassMembership.occurrence_id == occurrence.id
-                        ).all()
-                    ]
+                    class_ids = classes_by_occurrence[occurrence.id]
                     existing_memberships = {
                         row.class_id for row in db.query(models.LectureClassMembership).filter(
                             models.LectureClassMembership.lecture_id == lecture.id
                         ).all()
-                    }
+                    } if lecture.id in lecture_ids else set()
                     for class_id in set(class_ids) - existing_memberships:
                         db.add(models.LectureClassMembership(lecture_id=lecture.id, class_id=class_id))
-                    students = db.query(models.StudentRecord).filter(
-                        models.StudentRecord.class_id.in_(class_ids)
-                    ).all()
+                    students = [student for class_id in set(class_ids) for student in students_by_class[class_id]]
+                    attendance_rows = []
                     for student in students:
-                        existing = db.query(models.Attendance).filter(
-                            models.Attendance.lecture_id == lecture.id,
-                            models.Attendance.student_id == student.id,
-                        ).first()
-                        if existing:
+                        if student.id in existing_attendance[lecture.id]:
                             continue
                         target_rate = 0.65 + stable_fraction(seed, student.id, occurrence.course_id, "rate") * 0.33
                         present = stable_fraction(seed, student.id, occurrence.id, current_date) < target_rate
-                        db.add(
-                            models.Attendance(
-                                lecture_id=lecture.id,
-                                student_id=student.id,
-                                status="Present" if present else "Absent",
-                                marked_by=occurrence.faculty_id,
-                                source="synthetic",
-                                is_demo=True,
-                                generation_version=version,
-                            )
-                        )
+                        attendance_rows.append(dict(
+                            lecture_id=lecture.id,
+                            student_id=student.id,
+                            status="Present" if present else "Absent",
+                            marked_by=occurrence.faculty_id,
+                            source="synthetic",
+                            is_demo=True,
+                            generation_version=version,
+                        ))
                         counts["attendance_records"] += 1
+                    if attendance_rows:
+                        db.execute(insert(models.Attendance), attendance_rows)
+                    processed_lectures += 1
+                    if processed_lectures % 25 == 0:
+                        print(f"Lectures: {processed_lectures}; attendance rows: {counts['attendance_records']}", flush=True)
 
-            for assignment_link in assignments:
-                students = db.query(models.StudentRecord).filter(
-                    models.StudentRecord.class_id == assignment_link.class_id
-                ).all()
-                course = db.query(models.CourseModel).filter(models.CourseModel.id == assignment_link.course_id).one()
+            print("Lectures complete. Generating assignments and quizzes...", flush=True)
+            existing_submissions = defaultdict(set)
+            for aid, sid in db.query(models.AssignmentSubmission.assignment_id, models.AssignmentSubmission.student_id).all():
+                existing_submissions[aid].add(sid)
+            existing_attempts = defaultdict(set)
+            for qid, sid in db.query(models.QuizAttempt.quiz_id, models.QuizAttempt.student_id).all():
+                existing_attempts[qid].add(sid)
+            processed_class_courses = set()
+            for assignment_number, assignment_link in enumerate(assignments, 1):
+                # Multiple faculty can teach the same class/course. The demo IDs
+                # are class/course-based, so seed this combination only once.
+                class_course_key = (assignment_link.class_id, assignment_link.course_id)
+                if class_course_key in processed_class_courses:
+                    print(f"Class-course assignments: {assignment_number}/{len(assignments)} (shared class/course skipped)", flush=True)
+                    continue
+                processed_class_courses.add(class_course_key)
+                students = students_by_class[assignment_link.class_id]
+                course = courses_by_id[assignment_link.course_id]
                 for sequence in (1, 2):
                     assignment_id = f"DEMO-A-{assignment_link.class_id}-{course.code}-{sequence}"
                     assignment = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
@@ -231,11 +260,7 @@ def generate(seed: int, semester_start: date, semester_end: date, apply: bool) -
                     for student in students:
                         if stable_fraction(seed, assignment_id, student.id, "submit") < 0.08:
                             continue
-                        existing = db.query(models.AssignmentSubmission).filter(
-                            models.AssignmentSubmission.assignment_id == assignment_id,
-                            models.AssignmentSubmission.student_id == student.id,
-                        ).first()
-                        if existing:
+                        if student.id in existing_submissions[assignment_id]:
                             continue
                         score = round(8 + stable_fraction(seed, assignment_id, student.id, "score") * 12, 1)
                         db.add(
@@ -255,6 +280,7 @@ def generate(seed: int, semester_start: date, semester_end: date, apply: bool) -
                                 generation_version=version,
                             )
                         )
+                        existing_submissions[assignment_id].add(student.id)
                         counts["submissions"] += 1
 
                 for sequence in (1, 2):
@@ -300,11 +326,7 @@ def generate(seed: int, semester_start: date, semester_end: date, apply: bool) -
                         questions = db.query(models.QuizQuestion).filter(models.QuizQuestion.quiz_id == quiz_id).all()
                     counts["questions"] += len(questions)
                     for student in students:
-                        existing = db.query(models.QuizAttempt).filter(
-                            models.QuizAttempt.quiz_id == quiz_id,
-                            models.QuizAttempt.student_id == student.id,
-                        ).first()
-                        if existing:
+                        if student.id in existing_attempts[quiz_id]:
                             continue
                         answers = {}
                         score = 0
@@ -330,7 +352,9 @@ def generate(seed: int, semester_start: date, semester_end: date, apply: bool) -
                                 generation_version=version,
                             )
                         )
+                        existing_attempts[quiz_id].add(student.id)
                         counts["attempts"] += 1
+                print(f"Class-course assignments: {assignment_number}/{len(assignments)}", flush=True)
         return {"mode": "applied", "generationVersion": version, **counts}
     finally:
         db.close()
