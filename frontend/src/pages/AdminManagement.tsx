@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { Card, Badge, Button, Input, Select, SectionHeader, Modal } from '../components/ui';
 import { api } from '../services/api';
 
-type Tab = 'users' | 'classes';
+type Tab = 'users' | 'classes' | 'timetable';
 
 function SecretNotice({ title, value, onClose }: { title: string; value: string; onClose: () => void }) {
   return (
@@ -34,11 +34,17 @@ export default function AdminManagement({ initialTab = 'users' }: { initialTab?:
   const [newCourse, setNewCourse] = useState({ id: '', name: '', credits: '3' });
   const [assign, setAssign] = useState({ class_id: '', course_id: '', faculty_id: '' });
   const [faculty, setFaculty] = useState<any[]>([]);
+  const [requests, setRequests] = useState<any[]>([]);
+  const [slots, setSlots] = useState<any[]>([]);
+  const [slotClass, setSlotClass] = useState('');
+  const [slot, setSlot] = useState({ day: 'Monday', start_time: '09:30', end_time: '10:30', course_id: '', faculty_id: '', classroom: '', class_id: '', parallel_reason: '' });
 
   const wrap = async (fn: () => Promise<void>, ok?: string) => {
     setError(''); setMessage('');
     try { await fn(); if (ok) setMessage(ok); } catch (e: any) { setError(e.message); }
   };
+  const loadSlots = (cid = slotClass) => api.adminTimetable(cid || undefined).then(setSlots);
+  const loadRequests = () => api.adminResetRequests().then(setRequests);
   const loadUsers = () => api.adminListUsers(roleFilter || undefined, search || undefined).then(setUsers);
   const loadStructure = async () => {
     const [cl, co, as, fa] = await Promise.all([
@@ -50,7 +56,7 @@ export default function AdminManagement({ initialTab = 'users' }: { initialTab?:
       faculty_id: a.faculty_id || fa[0]?.id || '',
     }));
   };
-  useEffect(() => { void wrap(async () => { await Promise.all([loadUsers(), loadStructure()]); }); }, []);
+  useEffect(() => { void wrap(async () => { await Promise.all([loadUsers(), loadStructure(), loadRequests(), loadSlots()]); }); }, []);
   useEffect(() => { void wrap(async () => { await loadUsers(); }); }, [roleFilter]);
 
   const createUser = () => wrap(async () => {
@@ -68,6 +74,7 @@ export default function AdminManagement({ initialTab = 'users' }: { initialTab?:
     if (!window.confirm(`Issue a new temporary password for ${id}? Their sessions will be signed out.`)) return;
     const res = await api.adminResetPassword(id);
     setSecret({ title: `Temporary password for ${id}`, value: res.temporaryPassword });
+    await loadRequests();
   });
   const toggleActive = (u: any) => wrap(async () => {
     await api.adminUpdateUser(u.id, { is_active: !u.isActive });
@@ -87,12 +94,19 @@ export default function AdminManagement({ initialTab = 'users' }: { initialTab?:
       <div className="flex gap-2">
         <Button variant={tab === 'users' ? 'primary' : 'secondary'} onClick={() => setTab('users')}>Users</Button>
         <Button variant={tab === 'classes' ? 'primary' : 'secondary'} onClick={() => setTab('classes')}>Classes & Courses</Button>
+        <Button variant={tab === 'timetable' ? 'primary' : 'secondary'} onClick={() => setTab('timetable')}>Timetable</Button>
       </div>
       {error && <Card className="p-4 text-sm text-[#b04040]">{error}</Card>}
       {message && <Card className="p-4 text-sm text-[#1a6b3c]">{message}</Card>}
       {secret && <SecretNotice title={secret.title} value={secret.value} onClose={() => setSecret(null)} />}
 
       {tab === 'users' && <>
+        {requests.length > 0 && <Card className="p-5 space-y-3 border border-[#D98282]">
+          <h3 className="font-bold">Password reset requests ({requests.length})</h3>
+          {requests.map(r => <div key={r.userId} className="flex justify-between items-center bg-[#F4F1E6] rounded-xl p-3 text-sm">
+            <span><b>{r.userId}</b> · {r.name} · {r.role} · requested {new Date(r.requestedAt).toLocaleString()}</span>
+            <Button size="sm" onClick={() => void resetPassword(r.userId)}>Issue temporary password</Button></div>)}
+        </Card>}
         <Card className="p-5 space-y-3">
           <h3 className="font-bold">Create account</h3>
           <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
@@ -136,6 +150,35 @@ export default function AdminManagement({ initialTab = 'users' }: { initialTab?:
             </table>
             {!users.length && <p className="text-sm text-[#9a8a75] py-6 text-center">No users match.</p>}
           </div>
+        </Card>
+      </>}
+
+      {tab === 'timetable' && <>
+        <Card className="p-5 space-y-3">
+          <h3 className="font-bold">Add a weekly timetable entry</h3>
+          <p className="text-xs text-[#7a6a55]">Faculty, room and class clashes are checked. Entries imported from the official workbook are read-only; only entries created here can be removed.</p>
+          <div className="grid sm:grid-cols-3 lg:grid-cols-4 gap-3">
+            <Select label="Day" value={slot.day} onChange={v => setSlot({ ...slot, day: v })} options={['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'].map(d => ({ value: d, label: d }))} />
+            <Input label="Start" type="time" value={slot.start_time} onChange={v => setSlot({ ...slot, start_time: v })} />
+            <Input label="End" type="time" value={slot.end_time} onChange={v => setSlot({ ...slot, end_time: v })} />
+            <Input label="Classroom" value={slot.classroom} onChange={v => setSlot({ ...slot, classroom: v })} />
+            <Select label="Class" value={slot.class_id} onChange={v => setSlot({ ...slot, class_id: v })} options={[{ value: '', label: 'Select class' }, ...classOptions]} />
+            <Select label="Course" value={slot.course_id} onChange={v => setSlot({ ...slot, course_id: v })} options={[{ value: '', label: 'Select course' }, ...courses.map(c => ({ value: c.id, label: c.code }))]} />
+            <Select label="Faculty" value={slot.faculty_id} onChange={v => setSlot({ ...slot, faculty_id: v })} options={[{ value: '', label: 'Select faculty' }, ...faculty.map(f => ({ value: f.id, label: f.name }))]} />
+            <Input label="Parallel reason (optional)" value={slot.parallel_reason} onChange={v => setSlot({ ...slot, parallel_reason: v })} hint="Only for genuine batch or elective overlaps" />
+          </div>
+          <Button disabled={!slot.class_id || !slot.course_id || !slot.faculty_id || !slot.classroom} onClick={() => void wrap(async () => {
+            await api.adminAddTimetable({ day: slot.day, start_time: slot.start_time, end_time: slot.end_time, course_id: slot.course_id, faculty_id: slot.faculty_id, classroom: slot.classroom, class_ids: [slot.class_id], parallel_reason: slot.parallel_reason || null });
+            await loadSlots();
+          }, 'Timetable entry added.')}>Add entry</Button>
+        </Card>
+        <Card className="p-5 space-y-3">
+          <div className="flex gap-3 items-end"><Select label="Filter by class" value={slotClass} onChange={v => { setSlotClass(v); void wrap(async () => { await loadSlots(v); }); }} options={[{ value: '', label: 'All classes' }, ...classOptions]} /></div>
+          <div className="overflow-x-auto max-h-[28rem]"><table className="w-full text-sm">
+            <thead><tr className="text-left text-xs uppercase text-[#7a6a55]"><th className="py-2">Day</th><th>Time</th><th>Course</th><th>Classes</th><th>Faculty</th><th>Room</th><th /></tr></thead>
+            <tbody>{slots.map(r => <tr key={r.id} className="border-t border-[#E8E2D0]"><td className="py-2">{r.day}</td><td>{r.startTime}–{r.endTime}</td><td>{r.courseCode}</td><td>{r.classIds.join(', ')}</td><td>{r.facultyName || '—'}</td><td>{r.classroom || '—'}</td>
+              <td>{r.createdByAdmin ? <Button size="sm" variant="danger" onClick={() => void wrap(async () => { if (!window.confirm('Remove this entry?')) return; await api.adminDeleteTimetable(r.id); await loadSlots(); })}>Remove</Button> : <Badge variant="default">Imported</Badge>}</td></tr>)}</tbody>
+          </table></div>
         </Card>
       </>}
 

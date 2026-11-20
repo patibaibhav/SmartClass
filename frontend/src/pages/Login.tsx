@@ -14,6 +14,7 @@ export default function Login({ onLogin }: LoginProps) {
   const [showPass, setShowPass] = useState(false);
   const [remember, setRemember] = useState(false);
   const [error, setError] = useState('');
+  const [forgotNote, setForgotNote] = useState('');
   const [phase, setPhase] = useState<'login' | 'first-login'>('login');
   const [pendingUser, setPendingUser] = useState<User | null>(null);
   const [newPass, setNewPass] = useState('');
@@ -200,7 +201,15 @@ export default function Login({ onLogin }: LoginProps) {
               Sign In
             </Button>
 
-            <p className="text-xs text-[#9a8a75] text-center">Contact your administrator if you have forgotten your credentials.</p>
+            <div className="text-center space-y-1">
+              <button type="button" className="text-xs font-semibold text-[#2F4F3A] hover:underline"
+                onClick={async () => {
+                  if (!userId.trim()) { setForgotNote('Enter your User ID above first, then choose "Forgot password".'); return; }
+                  try { setForgotNote((await api.forgotPassword(userId.trim())).message); }
+                  catch (e: any) { setForgotNote(e.message); }
+                }}>Forgot password?</button>
+              {forgotNote && <p className="text-xs text-[#7a6a55]">{forgotNote}</p>}
+            </div>
           </form>
 
         </div>

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { TrendingUp, TrendingDown, Minus, ChevronRight } from 'lucide-react';
-import { Card, MetricCard, SectionHeader, ProgressBar, Badge } from '../components/ui';
+import { Card, MetricCard, SectionHeader, ProgressBar, Badge, Button } from '../components/ui';
+import { downloadCsv } from '../utils';
 import { api } from '../services/api';
 
 interface CourseResult {
@@ -69,7 +70,7 @@ export default function ResultsPage({ role = 'student' }: Props) {
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
-      <SectionHeader title="Results" sub="Academic performance calculated from recorded submissions and quiz attempts" />
+      <SectionHeader title="Results" sub="Academic performance calculated from recorded submissions and quiz attempts" action={results.length ? <Button variant="secondary" onClick={() => downloadCsv('results.csv', [['Course', 'Name', 'Assignments %', 'Quizzes %', 'Average %'], ...results.map(r => [r.course, r.name, r.assignments, r.quizzes, r.average])])}>Export CSV</Button> : undefined} />
       {error && <Card className="p-4 text-sm text-[#b04040]">{error}</Card>}
       <MetricCard label="Overall Average" value={overall === null ? '—' : `${overall}%`} sub="Available recorded work" color="#2F4F3A" />
       <Card className="overflow-hidden">

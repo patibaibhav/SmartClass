@@ -193,3 +193,137 @@ def test_council_head_is_bound_to_own_council():
     assert ev not in {e["id"] for e in client.get("/api/events", headers=ieee).json()}
     assert client.get("/api/events", headers=csi).json()[0]["council"] == "CSI"
     assert client.get("/api/events", headers=auth(login("STU-D12A-001"))).json() == []
+
+
+LECTURE = {"class_id": "D12A", "course_id": "TCS", "date": "2026-12-02", "start_time": "10:00",
+           "end_time": "11:00", "classroom": "314", "lecture_type": "Extra"}
+
+
+def test_substitute_lecture_flow_and_cancel():
+    fac = auth(login("FAC-SM"))
+    other = auth(login("FAC-OTHER"))
+    # Extra lecture must be taught by the creator
+    assert client.post("/api/lectures/create", headers=fac, json={
+        **LECTURE, "actual_faculty_id": "FAC-OTHER"}).status_code == 403
+    # Substitute: assigned faculty hands it to a colleague
+    sub = client.post("/api/lectures/create", headers=fac, json={
+        **LECTURE, "lecture_type": "Substitute", "actual_faculty_id": "FAC-OTHER", "classroom": "315"})
+    assert sub.status_code == 200, sub.text
+    lecture_id = sub.json()["lectureId"]
+    # The substitute can open the roster and mark attendance
+    roster = client.get(f"/api/lectures/{lecture_id}/roster", headers=other)
+    assert roster.status_code == 200
+    students = [{"student_id": s["id"], "status": "Present"} for s in roster.json()["students"]]
+    assert client.post("/api/attendance/mark", headers=other, json={"lecture_id": lecture_id, "attendance": students}).status_code == 200
+    # Conducted lectures cannot be cancelled
+    assert client.post(f"/api/lectures/{lecture_id}/cancel", headers=fac, json={}).status_code == 409
+    # A scheduled one can; marking a cancelled lecture is refused; students cannot cancel
+    extra = client.post("/api/lectures/create", headers=fac, json={
+        **LECTURE, "actual_faculty_id": "FAC-SM", "start_time": "12:00", "end_time": "13:00", "classroom": "316"}).json()["lectureId"]
+    assert client.post(f"/api/lectures/{extra}/cancel", headers=auth(login("STU-D12A-001")), json={}).status_code == 403
+    assert client.post(f"/api/lectures/{extra}/cancel", headers=other, json={}).status_code == 403
+    assert client.post(f"/api/lectures/{extra}/cancel", headers=fac, json={"reason": "Holiday"}).status_code == 200
+    assert client.post("/api/attendance/mark", headers=fac, json={"lecture_id": extra, "attendance": students}).status_code == 409
+    assert client.post(f"/api/lectures/{extra}/cancel", headers=fac, json={}).status_code == 409
+
+
+def test_faculty_list_is_not_available_to_students():
+    assert client.get("/api/faculty", headers=auth(login("STU-D12A-001"))).status_code == 403
+    assert {f["id"] for f in client.get("/api/faculty", headers=auth(login("FAC-SM"))).json()} >= {"FAC-SM", "FAC-OTHER"}
+
+
+def test_forgot_password_queue_is_generic_deduped_and_resolved_by_admin():
+    unknown = client.post("/api/auth/forgot-password", json={"user_id": "NOPE-1"})
+    known = client.post("/api/auth/forgot-password", json={"user_id": "STU-D12A-001"})
+    assert unknown.status_code == known.status_code == 200 and unknown.json() == known.json()
+    client.post("/api/auth/forgot-password", json={"user_id": "STU-D12A-001"})  # duplicate inside 24h
+    admin = admin_headers()
+    queue = client.get("/api/admin/reset-requests", headers=admin).json()
+    assert [r["userId"] for r in queue] == ["STU-D12A-001"]
+    assert client.get("/api/admin/reset-requests", headers=auth(login("FAC-SM"))).status_code == 403
+    assert client.post("/api/admin/users/STU-D12A-001/reset-password", headers=admin).status_code == 200
+    assert client.get("/api/admin/reset-requests", headers=admin).json() == []
+
+
+def test_event_drafts_are_private_until_published():
+    head, student = auth(login("CON-001")), auth(login("STU-D12A-001"))
+    draft = client.post("/api/events", headers=head, json={**EVENT, "publish": False}).json()["eventId"]
+    assert draft in {e["id"] for e in client.get("/api/events", headers=head).json()}
+    assert draft not in {e["id"] for e in client.get("/api/events", headers=student).json()}
+    assert "Hackathon" not in {a["title"] for a in client.get("/api/announcements", headers=student).json()}
+    assert client.post(f"/api/events/{draft}/publish", headers=auth(login("STU-D12A-001"))).status_code == 403
+    assert client.post(f"/api/events/{draft}/publish", headers=head).status_code == 200
+    assert draft in {e["id"] for e in client.get("/api/events", headers=student).json()}
+    assert "Hackathon" in {a["title"] for a in client.get("/api/announcements", headers=student).json()}
+    assert client.post(f"/api/events/{draft}/publish", headers=head).status_code == 409
+
+
+def test_assignment_file_submission_upload_download_and_authorization(monkeypatch):
+    import main as main_module
+    from storage import StoredObject
+
+    class FakeStorage:
+        objects: dict = {}
+
+        def create_key(self, *, course_id, filename):
+            return f"submissions/{course_id}/t-{filename}"
+
+        def upload(self, *, key, content, content_type):
+            self.objects[key] = (content, content_type)
+
+        def download(self, key):
+            content, content_type = self.objects[key]
+            return StoredObject(key=key, content=content, content_type=content_type)
+
+        def delete(self, key):
+            self.objects.pop(key, None)
+
+    fake = FakeStorage()
+    monkeypatch.setattr(main_module, "get_storage", lambda: fake)
+    faculty, student = auth(login("FAC-SM")), auth(login("STU-D12A-001"))
+    created = client.post("/api/assignments", headers=faculty, json={
+        "class_id": "D12A", "course_id": "TCS", "title": "Report", "description": "x",
+        "due_date": "2099-01-01", "marks": 10, "allow_late": True})
+    assert created.status_code in {200, 201}, created.text
+    assignment_id = [a for a in client.get("/api/assignments", headers=faculty).json() if a["title"] == "Report"][0]["id"]
+    # Bad type rejected, other class cannot submit
+    assert client.post(f"/api/assignments/{assignment_id}/submit-file", headers=student,
+                       files={"file": ("x.exe", b"MZ", "application/octet-stream")}).status_code == 503
+    assert client.post(f"/api/assignments/{assignment_id}/submit-file", headers=auth(login("STU-D12B-001")),
+                       files={"file": ("r.pdf", b"%PDF-1", "application/pdf")}).status_code == 403
+    ok = client.post(f"/api/assignments/{assignment_id}/submit-file", headers=student,
+                     files={"file": ("report.pdf", b"%PDF-1 hello", "application/pdf")})
+    assert ok.status_code == 200, ok.text
+    mine = [a for a in client.get("/api/assignments", headers=student).json() if a["id"] == assignment_id][0]
+    assert mine["hasFile"] and mine["submissionFile"] == "report.pdf"
+    seen = client.get(f"/api/assignments/{assignment_id}/submissions", headers=faculty).json()
+    assert seen[0]["hasFile"]
+    url = f"/api/assignments/submissions/{seen[0]['id']}/file"
+    assert client.get(url, headers=faculty).content == b"%PDF-1 hello"
+    assert client.get(url, headers=student).status_code == 200
+    assert client.get(url, headers=auth(login("STU-D12A-002"))).status_code == 403
+    assert client.get(url, headers=auth(login("FAC-OTHER"))).status_code == 403
+    # Text-only resubmission drops the file
+    client.post(f"/api/assignments/{assignment_id}/submit", headers=student, json={"submission_text": "plain answer"})
+    assert not [a for a in client.get("/api/assignments", headers=student).json() if a["id"] == assignment_id][0]["hasFile"]
+    assert not fake.objects
+
+
+def test_admin_timetable_create_conflicts_and_delete():
+    admin = admin_headers()
+    entry = {"day": "Tuesday", "start_time": "09:00", "end_time": "10:00", "course_id": "TCS",
+             "faculty_id": "FAC-SM", "classroom": "401", "class_ids": ["D12A"]}
+    created = client.post("/api/admin/timetable", headers=admin, json=entry)
+    assert created.status_code == 201, created.text
+    clash = client.post("/api/admin/timetable", headers=admin, json={**entry, "start_time": "09:30", "end_time": "10:30"})
+    assert clash.status_code == 409 and "already teaches" in clash.json()["detail"]
+    adjacent = client.post("/api/admin/timetable", headers=admin, json={**entry, "start_time": "10:00", "end_time": "11:00"})
+    assert adjacent.status_code == 201
+    assert client.post("/api/admin/timetable", headers=admin, json={**entry, "end_time": "08:00"}).status_code == 400
+    day = client.get("/api/timetable?day=Tuesday", headers=auth(login("STU-D12A-001"))).json()
+    assert any(l["room"] == "401" for l in day["Tuesday"])
+    assert client.post("/api/admin/timetable", headers=auth(login("FAC-SM")), json=entry).status_code == 403
+    listed = client.get("/api/admin/timetable?class_id=D12A", headers=admin).json()
+    assert len(listed) == 2 and all(r["createdByAdmin"] for r in listed)
+    assert client.delete(f"/api/admin/timetable/{created.json()['id']}", headers=admin).status_code == 200
+    assert client.delete(f"/api/admin/timetable/{created.json()['id']}", headers=admin).status_code == 404

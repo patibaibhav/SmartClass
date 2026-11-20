@@ -2,6 +2,17 @@
 
 Updated: 2026-10-28
 
+## Update 2026-11-20 (later, branch `dev6`)
+
+- Extra/Substitute lectures: substitute teacher can now be named (assigned faculty hands a lecture to a colleague who can then mark attendance); lectures can be cancelled (excluded from attendance, audited, students notified); marking a cancelled lecture is refused. `GET /api/faculty` lists names for the picker.
+- Forgot password: `POST /api/auth/forgot-password` (generic response, 24h dedupe) queues a request; Admin sees the queue and issues a temporary password.
+- Council event drafts (`is_published`) with publish endpoint; drafts invisible to students until published.
+- Assignment file submissions via private storage (`submit-file`, authorised download for the owner and the assignment's faculty/HOD); text resubmission removes the file.
+- Admin timetable entries (create with faculty/room/class clash checks, delete admin-created only; imported workbook entries stay read-only).
+- CSV exports: attendance roster, defaulters, results.
+- Migrations: `d52e8fa1b3c3` (users.council), `e63f9ab2c4d4` (council_events.is_published), `f85a0bc3d5e5` (stored_files.submission_id). 42 backend tests pass.
+- Still open: Supabase Storage credentials for live uploads (materials + submissions), grievance attachments, email notifications, browser E2E, load test, backup/restore drill.
+
 ## Update 2026-11-20 (branch `dev6`)
 
 - **Admin role is now real**: `backend/admin_routes.py` adds audited user create/update/deactivate/reset-password, student class reassignment, class/course create/activate, and faculty-class-course assignment. New `AdminManagement` UI replaces the "not exposed" placeholder. Deactivation sets `users.is_active=false` and bumps `token_version` so live sessions die immediately.

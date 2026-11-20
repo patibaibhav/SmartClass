@@ -328,6 +328,7 @@ class StoredFile(Base):
     uploaded_by_id = Column(String(50), ForeignKey("users.id"), nullable=False, index=True)
     course_id = Column(String(50), ForeignKey("courses.id"), nullable=False, index=True)
     material_id = Column(String(50), ForeignKey("study_materials.id"), nullable=True, index=True)
+    submission_id = Column(Integer, nullable=True, index=True)  # assignment_submissions.id
     created_at = Column(DateTime, default=utc_now, nullable=False)
 
 class Quiz(Base):
@@ -447,6 +448,7 @@ class CouncilEvent(Base):
     organizer = Column(String(100), nullable=False)
     registration_link = Column(String(255), nullable=True)
     visibility = Column(String(50), default="College Wide") # College Wide or Council Only
+    is_published = Column(Boolean, nullable=False, default=True, server_default="1")
     created_by = Column(String(50), ForeignKey("users.id"), nullable=False)
 
 class CalendarEntry(Base):

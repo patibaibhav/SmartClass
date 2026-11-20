@@ -7,6 +7,10 @@ class LoginRequest(BaseModel):
     password: str
     remember: bool = False
 
+class ForgotPasswordRequest(BaseModel):
+    user_id: str = Field(min_length=2, max_length=50)
+
+
 class FirstLoginRequest(BaseModel):
     new_password: str
     confirm_password: str
@@ -155,6 +159,7 @@ class CouncilEventCreateRequest(BaseModel):
     organizer: str
     registration_link: Optional[str] = None
     visibility: str = "College Wide"
+    publish: bool = True
 
 # Free Classroom search request
 class ClassroomSearchRequest(BaseModel):

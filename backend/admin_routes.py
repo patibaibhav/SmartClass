@@ -213,6 +213,27 @@ def reset_password(user_id: str, admin: models.User = Depends(require_role("admi
             "notice": "Share this password securely. It is shown only once."}
 
 
+@router.get("/reset-requests")
+def reset_requests(admin: models.User = Depends(require_role("admin")), db: Session = Depends(get_db)):
+    """Users who asked for a reset and have not been issued a new temporary password since."""
+    pending = {}
+    for row in db.query(models.AuditLog).filter(
+        models.AuditLog.action == "PASSWORD_RESET_REQUESTED"
+    ).order_by(models.AuditLog.timestamp):
+        pending[row.user_id] = row.timestamp
+    done: dict = {}
+    for row in db.query(models.AuditLog).filter(models.AuditLog.action == "PASSWORD_RESET"):
+        target = (row.details or "").rsplit(" ", 1)[-1]
+        if target and (target not in done or row.timestamp > done[target]):
+            done[target] = row.timestamp
+    users = {u.id: u for u in db.query(models.User).filter(models.User.id.in_(list(pending)))} if pending else {}
+    return [
+        {"userId": uid, "name": users[uid].name, "role": users[uid].role, "requestedAt": ts.isoformat()}
+        for uid, ts in sorted(pending.items(), key=lambda kv: kv[1], reverse=True)
+        if uid in users and not (uid in done and done[uid] > ts)
+    ]
+
+
 @router.get("/classes")
 def list_classes(admin: models.User = Depends(require_role("admin")), db: Session = Depends(get_db)):
     counts: dict = {}
@@ -302,5 +323,122 @@ def remove_assignment(assignment_id: int, admin: models.User = Depends(require_r
     audit(db, admin, "ASSIGNMENT_REMOVED", "ClassCourse",
           f"{row.faculty_id} removed from {row.class_id}/{row.course_id}")
     db.delete(row)
+    db.commit()
+    return {"message": "Removed"}
+
+
+# ── Timetable administration (FR-TT: Admin creates/edits entries) ─────────────
+DAYS = {"Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"}
+DAY_ORDER = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+TIME_PATTERN = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+class TimetableCreate(BaseModel):
+    day: str
+    start_time: str
+    end_time: str
+    course_id: str
+    faculty_id: str
+    classroom: str = Field(min_length=1, max_length=50)
+    class_ids: list[str] = Field(min_length=1)
+    session_type: str = "Regular"
+    parallel_reason: Optional[str] = None  # explicit, audited reason to overlap another class activity
+
+
+def view_occurrence(o: models.ScheduleOccurrence, class_ids: list[str], faculty_names: dict) -> dict:
+    return {
+        "id": o.id, "day": o.day_of_week, "startTime": o.start_time, "endTime": o.end_time,
+        "courseId": o.course_id, "courseCode": o.source_subject_code, "facultyId": o.faculty_id,
+        "facultyName": faculty_names.get(o.faculty_id), "classroom": o.classroom,
+        "classIds": class_ids, "sessionType": o.session_type, "activity": o.activity_kind,
+        "createdByAdmin": o.source_sheet == "admin",
+    }
+
+
+@router.get("/timetable")
+def list_timetable(class_id: Optional[str] = None, admin: models.User = Depends(require_role("admin")),
+                   db: Session = Depends(get_db)):
+    members: dict[int, list[str]] = {}
+    for occurrence_id, cid in db.query(models.ScheduleClassMembership.occurrence_id,
+                                       models.ScheduleClassMembership.class_id):
+        members.setdefault(occurrence_id, []).append(cid)
+    names = {u.id: u.name for u in db.query(models.User).filter(models.User.role == "faculty")}
+    order = {d: i for i, d in enumerate(DAY_ORDER)}
+    rows = []
+    for o in db.query(models.ScheduleOccurrence):
+        classes = sorted(members.get(o.id, []))
+        if class_id and class_id not in classes:
+            continue
+        rows.append(view_occurrence(o, classes, names))
+    rows.sort(key=lambda r: (order.get(r["day"], 9), r["startTime"], r["courseCode"]))
+    return rows
+
+
+@router.post("/timetable", status_code=201)
+def create_timetable_entry(req: TimetableCreate, admin: models.User = Depends(require_role("admin")),
+                           db: Session = Depends(get_db)):
+    import uuid
+    if req.day not in DAYS:
+        raise HTTPException(400, "Day must be Monday to Saturday")
+    if not (TIME_PATTERN.match(req.start_time) and TIME_PATTERN.match(req.end_time)) or req.end_time <= req.start_time:
+        raise HTTPException(400, "Times must be HH:MM (24-hour) and the end must be after the start")
+    course = db.get(models.CourseModel, req.course_id)
+    faculty = db.get(models.User, req.faculty_id)
+    if not course or not faculty or faculty.role != "faculty":
+        raise HTTPException(404, "Course or faculty not found")
+    class_ids = list(dict.fromkeys(req.class_ids))
+    for cid in class_ids:
+        if not db.get(models.ClassModel, cid):
+            raise HTTPException(404, f"Class {cid} not found")
+    O = models.ScheduleOccurrence
+    overlap = (O.day_of_week == req.day, O.start_time < req.end_time, O.end_time > req.start_time)
+    problems = []
+    clash = db.query(O).filter(*overlap, O.faculty_id == req.faculty_id).first()
+    if clash:
+        problems.append(f"{faculty.name} already teaches {clash.source_subject_code} {clash.start_time}-{clash.end_time}")
+    clash = db.query(O).filter(*overlap, O.classroom == req.classroom).first()
+    if clash:
+        problems.append(f"Room {req.classroom} is used by {clash.source_subject_code} {clash.start_time}-{clash.end_time}")
+    if not (req.parallel_reason or "").strip():
+        clash = db.query(O).join(models.ScheduleClassMembership,
+                                 models.ScheduleClassMembership.occurrence_id == O.id).filter(
+            *overlap, models.ScheduleClassMembership.class_id.in_(class_ids)).first()
+        if clash:
+            problems.append(f"A selected class already has {clash.source_subject_code} "
+                            f"{clash.start_time}-{clash.end_time} (give a parallel_reason for genuine batch/elective overlaps)")
+    if problems:
+        raise HTTPException(409, "; ".join(problems))
+    occurrence = models.ScheduleOccurrence(
+        day_of_week=req.day, start_time=req.start_time, end_time=req.end_time, course_id=course.id,
+        source_subject_code=course.code, faculty_id=faculty.id, classroom=req.classroom,
+        activity_kind="lecture", session_type=req.session_type,
+        conflict_exception_reason=(req.parallel_reason or None),
+        raw_source_text=f"Created by administrator {admin.id}", source_sheet="admin",
+        source_cell=f"ADMIN-{uuid.uuid4().hex[:12]}", source_item_index=0, source_workbook_sha256="admin",
+    )
+    db.add(occurrence)
+    db.flush()
+    for cid in class_ids:
+        db.add(models.ScheduleClassMembership(occurrence_id=occurrence.id, class_id=cid))
+    audit(db, admin, "TIMETABLE_CREATED", "ScheduleOccurrence",
+          f"{occurrence.id} {req.day} {req.start_time}-{req.end_time} {course.code} {class_ids}")
+    db.commit()
+    return {"id": occurrence.id}
+
+
+@router.delete("/timetable/{occurrence_id}")
+def delete_timetable_entry(occurrence_id: int, admin: models.User = Depends(require_role("admin")),
+                           db: Session = Depends(get_db)):
+    occurrence = db.get(models.ScheduleOccurrence, occurrence_id)
+    if not occurrence:
+        raise HTTPException(404, "Timetable entry not found")
+    if occurrence.source_sheet != "admin":
+        raise HTTPException(409, "Entries imported from the official workbook are read-only; re-import to change them")
+    if db.query(models.Lecture).filter(models.Lecture.schedule_occurrence_id == occurrence_id).first():
+        raise HTTPException(409, "Lectures already exist for this entry and cannot be orphaned")
+    db.query(models.ScheduleBatchGroup).filter_by(occurrence_id=occurrence_id).delete()
+    db.query(models.ScheduleClassMembership).filter_by(occurrence_id=occurrence_id).delete()
+    audit(db, admin, "TIMETABLE_DELETED", "ScheduleOccurrence", str(occurrence_id))
+    db.delete(occurrence)
     db.commit()
     return {"message": "Removed"}

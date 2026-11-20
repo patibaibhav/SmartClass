@@ -319,6 +319,27 @@ def login(req: schemas.LoginRequest, db: Session = Depends(get_db)):
         "user": {**serialize_user(user), "firstLogin": False}
     }
 
+@app.post("/api/auth/forgot-password")
+def forgot_password(req: schemas.ForgotPasswordRequest, db: Session = Depends(get_db)):
+    """Queue a reset request for an administrator. The response never reveals whether
+    the ID exists, and repeated requests inside 24h are not queued again."""
+    generic = {"message": "If this ID exists, an administrator has been notified and will issue a temporary password."}
+    user = db.get(models.User, req.user_id.strip())
+    if not user or user.is_active is False or user.role == "admin":
+        return generic
+    cutoff = utc_now() - timedelta(hours=24)
+    recent = db.query(models.AuditLog).filter(
+        models.AuditLog.action == "PASSWORD_RESET_REQUESTED",
+        models.AuditLog.user_id == user.id,
+        models.AuditLog.timestamp > cutoff,
+    ).first()
+    if not recent:
+        db.add(models.AuditLog(user_id=user.id, action="PASSWORD_RESET_REQUESTED", resource="User",
+                               details="User requested a password reset."))
+        db.commit()
+    return generic
+
+
 @app.post("/api/auth/first-login")
 def first_login(
     req: schemas.FirstLoginRequest,
@@ -818,11 +839,18 @@ def create_lecture(
             models.ClassCourse.course_id == req.course_id,
             models.ClassCourse.faculty_id == user.id,
         ).first()
-        if not authorized or req.actual_faculty_id != user.id:
+        if not authorized:
+            raise HTTPException(status_code=403, detail="Faculty assignment does not permit this lecture")
+        if req.lecture_type == "Substitute":
+            # The assigned faculty hands the lecture to a colleague (FR-LECT substitute flow).
+            req.scheduled_faculty_id = user.id
+            if req.actual_faculty_id == user.id:
+                raise HTTPException(status_code=400, detail="Choose a different faculty member as the substitute")
+        elif req.actual_faculty_id != user.id:
             raise HTTPException(status_code=403, detail="Faculty assignment does not permit this lecture")
     sched_faculty = db.query(models.User).filter(models.User.id == (req.scheduled_faculty_id or req.actual_faculty_id)).first()
     act_faculty = db.query(models.User).filter(models.User.id == req.actual_faculty_id).first()
-    if not sched_faculty or not act_faculty:
+    if not sched_faculty or not act_faculty or act_faculty.role != "faculty":
         raise HTTPException(status_code=400, detail="Unknown faculty account")
     conflict = db.query(models.Lecture).filter(
         models.Lecture.date == req.date,
@@ -875,6 +903,53 @@ def create_lecture(
 
     return {"message": "Lecture created successfully", "lectureId": lec.id}
 
+@app.get("/api/faculty")
+def list_faculty(
+    user: models.User = Depends(require_role("faculty", "hod", "admin")),
+    db: Session = Depends(get_db),
+):
+    """Names only: used to pick a substitute teacher."""
+    return [{"id": f.id, "name": f.name} for f in db.query(models.User).filter(
+        models.User.role == "faculty", models.User.is_active != False  # noqa: E712
+    ).order_by(models.User.name)]
+
+
+class LectureCancelRequest(schemas.BaseModel):
+    reason: Optional[str] = None
+
+
+@app.post("/api/lectures/{lecture_id}/cancel")
+def cancel_lecture(
+    lecture_id: int,
+    req: LectureCancelRequest,
+    user: models.User = Depends(require_role("faculty", "hod", "admin")),
+    db: Session = Depends(get_db),
+):
+    """Cancelled lectures are excluded from attendance percentages (BR / FR-LECT)."""
+    lecture = db.get(models.Lecture, lecture_id)
+    if not lecture:
+        raise HTTPException(status_code=404, detail="Lecture not found")
+    if user.role == "faculty" and not user.is_hod and user.id not in {
+        lecture.actual_faculty_id, lecture.scheduled_faculty_id
+    }:
+        raise HTTPException(status_code=403, detail="Only the lecture's faculty may cancel it")
+    if lecture.status == "Cancelled":
+        raise HTTPException(status_code=409, detail="Lecture is already cancelled")
+    if lecture.status == "Conducted":
+        raise HTTPException(status_code=409, detail="A lecture with saved attendance cannot be cancelled")
+    lecture.status = "Cancelled"
+    if req.reason:
+        lecture.notes = (lecture.notes + " | " if lecture.notes else "") + f"Cancelled: {req.reason}"
+    db.add(models.AuditLog(user_id=user.id, action="LECTURE_CANCELLED", resource="Lecture", details=str(lecture_id)))
+    db.add(models.Notification(
+        id=f"N_{uuid.uuid4().hex[:6]}",
+        message=f"Lecture cancelled: {lecture.course_name} on {lecture.date} {lecture.start_time}.",
+        type="warning", icon="timetable", time_ago="Just now",
+    ))
+    db.commit()
+    return {"message": "Lecture cancelled", "lectureId": lecture_id}
+
+
 @app.post("/api/attendance/mark")
 def mark_attendance(
     req: schemas.MarkAttendanceRequest,
@@ -904,6 +979,8 @@ def mark_attendance(
         ).first()
         if not authorized and lec.actual_faculty_id != user.id:
             raise HTTPException(status_code=403, detail="Faculty assignment does not permit attendance changes")
+    if lec.status == "Cancelled":
+        raise HTTPException(status_code=409, detail="Attendance cannot be recorded for a cancelled lecture")
     faculty_id = user.id
     roster_ids = {
         student.id for student in eligible_roster(
@@ -1551,6 +1628,9 @@ def list_assignments(
                     pending_by_assignment[assignment_id] = pending_by_assignment.get(assignment_id, 0) + n
 
     results = []
+    student_file_ids = submission_ids_with_files(
+        db, [item.id for item in subs_by_assignment.values()]
+    ) if student_id else set()
     for a in assignments:
         sub = subs_by_assignment.get(a.id) if student_id else None
 
@@ -1585,6 +1665,8 @@ def list_assignments(
             "description": a.description,
             "submittedAt": submitted_at,
             "submissionFile": submission_file,
+            "submissionId": sub.id if sub else None,
+            "hasFile": bool(sub and sub.id in student_file_ids),
             "submissionText": submission_text,
             "obtainedMarks": obtained_marks,
             "feedback": feedback,
@@ -1595,6 +1677,13 @@ def list_assignments(
             "allowLate": a.allow_late,
         })
     return results
+
+
+def submission_ids_with_files(db: Session, submission_ids: list[int]) -> set[int]:
+    if not submission_ids:
+        return set()
+    return {row[0] for row in db.query(models.StoredFile.submission_id).filter(
+        models.StoredFile.submission_id.in_(submission_ids))}
 
 
 @app.get("/api/assignments/{assignment_id}/submissions")
@@ -1611,18 +1700,75 @@ def list_assignment_submissions(
     submissions = db.query(models.AssignmentSubmission).filter_by(
         assignment_id=assignment.id
     ).order_by(models.AssignmentSubmission.student_name).all()
+    files_with_submissions = submission_ids_with_files(db, [item.id for item in submissions])
     return [{
         "id": submission.id,
         "studentId": submission.student_id,
         "studentName": submission.student_name,
         "submittedAt": submission.submitted_at,
         "submissionFile": submission.submission_file,
+        "hasFile": submission.id in files_with_submissions,
         "submissionText": submission.submission_text,
         "status": submission.status,
         "obtainedMarks": submission.obtained_marks,
         "feedback": submission.feedback,
         "gradedAt": submission.graded_at,
     } for submission in submissions]
+
+def _check_submission_allowed(db: Session, user: models.User, assignment_id: str) -> tuple[models.Assignment, str]:
+    """Scope, eligibility and deadline rules shared by text and file submissions."""
+    asg = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
+    if not asg:
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    if asg.class_id != user.class_id:
+        raise HTTPException(status_code=403, detail="Assignment is outside the student's class")
+    if not student_is_eligible_for_course(db, user, asg.course_id):
+        raise HTTPException(status_code=403, detail="Assignment is outside the student's enrolled courses")
+    try:
+        deadline = datetime.fromisoformat(asg.due_date)
+    except ValueError as exc:
+        raise HTTPException(status_code=500, detail="Assignment deadline is misconfigured") from exc
+    if len(asg.due_date) == 10:
+        deadline = deadline.replace(hour=23, minute=59, second=59)
+    sub_status = "submitted"
+    if utc_now() > deadline:
+        if not asg.allow_late:
+            raise HTTPException(status_code=409, detail="The submission deadline has passed")
+        sub_status = "late"
+    return asg, sub_status
+
+
+def _save_submission(
+    db: Session, user: models.User, assignment_id: str, sub_status: str,
+    *, text: Optional[str], file_name: Optional[str],
+) -> models.AssignmentSubmission:
+    now_str = utc_now().strftime("%Y-%m-%dT%H:%M:%S")
+    sub = db.query(models.AssignmentSubmission).filter(
+        models.AssignmentSubmission.assignment_id == assignment_id,
+        models.AssignmentSubmission.student_id == user.id,
+    ).first()
+    if sub:
+        sub.submitted_at = now_str
+        sub.submission_file = file_name
+        sub.submission_text = text
+        sub.status = sub_status
+    else:
+        sub = models.AssignmentSubmission(
+            assignment_id=assignment_id, student_id=user.id, student_name=user.name,
+            submitted_at=now_str, submission_file=file_name, submission_text=text, status=sub_status,
+        )
+        db.add(sub)
+    return sub
+
+
+def _remove_submission_files(db: Session, submission_id: int) -> None:
+    for old in db.query(models.StoredFile).filter_by(submission_id=submission_id).all():
+        try:
+            get_storage().delete(old.object_key)
+        except StorageError:
+            logger.warning("orphaned_submission_file file_id=%s", old.id)
+        db.delete(old)
+
 
 @app.post("/api/assignments/{assignment_id}/submit")
 def submit_assignment(
@@ -1631,58 +1777,95 @@ def submit_assignment(
     user: models.User = Depends(require_role("student")),
     db: Session = Depends(get_db),
 ):
-    student_id = user.id
-    student_name = user.name
-    
-    asg = db.query(models.Assignment).filter(models.Assignment.id == assignment_id).first()
-    if not asg:
-        raise HTTPException(status_code=404, detail="Assignment not found")
-    if asg.class_id != user.class_id:
-        raise HTTPException(status_code=403, detail="Assignment is outside the student's class")
-    if not student_is_eligible_for_course(db, user, asg.course_id):
-        raise HTTPException(status_code=403, detail="Assignment is outside the student's enrolled courses")
     if not (req.submission_file and req.submission_file.strip()) and not (
         req.submission_text and req.submission_text.strip()
     ):
         raise HTTPException(status_code=400, detail="Submission text or a file reference is required")
-
-    now_str = utc_now().strftime("%Y-%m-%dT%H:%M:%S")
-    sub_status = "submitted"
-    try:
-        deadline = datetime.fromisoformat(asg.due_date)
-    except ValueError as exc:
-        raise HTTPException(status_code=500, detail="Assignment deadline is misconfigured") from exc
-    if len(asg.due_date) == 10:
-        deadline = deadline.replace(hour=23, minute=59, second=59)
-    if utc_now() > deadline:
-        if not asg.allow_late:
-            raise HTTPException(status_code=409, detail="The submission deadline has passed")
-        sub_status = "late"
-
-    sub = db.query(models.AssignmentSubmission).filter(
-        models.AssignmentSubmission.assignment_id == assignment_id,
-        models.AssignmentSubmission.student_id == student_id
-    ).first()
-
-    if sub:
-        sub.submitted_at = now_str
-        sub.submission_file = req.submission_file.strip() if req.submission_file else None
-        sub.submission_text = req.submission_text.strip() if req.submission_text else None
-        sub.status = sub_status
-    else:
-        sub = models.AssignmentSubmission(
-            assignment_id=assignment_id,
-            student_id=student_id,
-            student_name=student_name,
-            submitted_at=now_str,
-            submission_file=req.submission_file.strip() if req.submission_file else None,
-            submission_text=req.submission_text.strip() if req.submission_text else None,
-            status=sub_status
-        )
-        db.add(sub)
-
+    _, sub_status = _check_submission_allowed(db, user, assignment_id)
+    sub = _save_submission(
+        db, user, assignment_id, sub_status,
+        text=req.submission_text.strip() if req.submission_text else None,
+        file_name=req.submission_file.strip() if req.submission_file else None,
+    )
+    db.flush()
+    if not sub.submission_file:
+        _remove_submission_files(db, sub.id)  # a text-only resubmission replaces an uploaded file
     db.commit()
     return {"message": "Assignment submitted successfully", "status": sub_status}
+
+
+@app.post("/api/assignments/{assignment_id}/submit-file")
+async def submit_assignment_file(
+    assignment_id: str,
+    file: UploadFile = File(...),
+    submission_text: str = Form(""),
+    user: models.User = Depends(require_role("student")),
+    db: Session = Depends(get_db),
+):
+    """FR-ASG: upload a private file as the submission (bytes live outside the database)."""
+    asg, sub_status = _check_submission_allowed(db, user, assignment_id)
+    content = await file.read()
+    storage = None
+    object_key = None
+    try:
+        original_filename, content_type = validate_upload(file.filename or "", file.content_type or "", content)
+        storage = get_storage()
+        object_key = storage.create_key(course_id=asg.course_id, filename=original_filename)
+        storage.upload(key=object_key, content=content, content_type=content_type)
+    except StorageError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    try:
+        sub = _save_submission(
+            db, user, assignment_id, sub_status,
+            text=submission_text.strip() or None, file_name=original_filename,
+        )
+        db.flush()
+        _remove_submission_files(db, sub.id)
+        db.add(models.StoredFile(
+            id=f"FILE-{uuid.uuid4().hex[:12].upper()}", bucket=SUPABASE_STORAGE_BUCKET,
+            object_key=object_key, original_filename=original_filename, content_type=content_type,
+            size_bytes=len(content), uploaded_by_id=user.id, course_id=asg.course_id, submission_id=sub.id,
+        ))
+        db.commit()
+    except Exception:
+        db.rollback()
+        try:
+            storage.delete(object_key)
+        except StorageError:
+            pass
+        raise
+    return {"message": "File submitted successfully", "status": sub_status}
+
+
+@app.get("/api/assignments/submissions/{submission_id}/file")
+def download_submission_file(
+    submission_id: int,
+    user: models.User = Depends(require_role("student", "faculty", "hod")),
+    db: Session = Depends(get_db),
+):
+    sub = db.get(models.AssignmentSubmission, submission_id)
+    stored = db.query(models.StoredFile).filter_by(submission_id=submission_id).first() if sub else None
+    if not sub or not stored:
+        raise HTTPException(status_code=404, detail="No file is attached to this submission")
+    assignment = db.get(models.Assignment, sub.assignment_id)
+    if user.role == "student":
+        allowed = sub.student_id == user.id
+    else:
+        allowed = bool(assignment and (user.is_hod or assignment.created_by == user.id))
+    if not allowed:
+        raise HTTPException(status_code=403, detail="You are not authorized to download this file")
+    try:
+        data = get_storage().download(stored.object_key)
+    except StorageError as exc:
+        raise HTTPException(
+            status_code=404 if "no longer available" in str(exc) else 503, detail=str(exc)
+        ) from exc
+    safe_filename = stored.original_filename.replace('"', "")
+    return Response(
+        content=data.content, media_type=stored.content_type,
+        headers={"Content-Disposition": f'attachment; filename="{safe_filename}"'},
+    )
+
 
 @app.post("/api/assignments/submissions/{submission_id}/grade")
 def grade_submission(
@@ -2552,6 +2735,10 @@ def list_events(
     db: Session = Depends(get_db),
 ):
     query = db.query(models.CouncilEvent)
+    if user.role not in {"council", "admin"}:
+        query = query.filter(models.CouncilEvent.is_published == True)  # noqa: E712
+    elif user.role == "council":
+        query = query.filter(or_(models.CouncilEvent.is_published == True, models.CouncilEvent.created_by == user.id))  # noqa: E712
     if user.role == "council" and user.council:
         query = query.filter(or_(
             models.CouncilEvent.visibility == "College Wide",
@@ -2571,8 +2758,23 @@ def list_events(
         "description": e.description,
         "organizer": e.organizer,
         "registrationLink": e.registration_link,
-        "visibility": e.visibility
+        "visibility": e.visibility,
+        "isPublished": e.is_published is not False,
     } for e in items]
+
+def _publish_event_side_effects(db: Session, ev: models.CouncilEvent) -> None:
+    """FR-EVENT-005/006: calendar entry and announcement created when an event goes public."""
+    db.add(models.CalendarEntry(
+        title=ev.title, category="Events", date=ev.date,
+        time=f"{ev.start_time}–{ev.end_time}", description=ev.description, event_id=ev.id,
+    ))
+    db.add(models.Announcement(
+        id=f"AN{uuid.uuid4().hex[:4].upper()}", title=ev.title,
+        content=f"{ev.description}\n\nVenue: {ev.venue}\nTime: {ev.start_time} - {ev.end_time}",
+        publisher_name=ev.council, publisher_role="Council", date=ev.date,
+        audience="College", type="Events", event_id=ev.id,
+    ))
+
 
 @app.post("/api/events")
 def create_event(
@@ -2597,35 +2799,16 @@ def create_event(
         visibility=req.visibility,
         created_by=user.id
     )
+    ev.is_published = bool(req.publish)
     db.add(ev)
-
-    # FR-EVENT-005: Auto-create calendar entry
-    cal = models.CalendarEntry(
-        title=req.title,
-        category="Events",
-        date=req.date,
-        time=f"{req.start_time}–{req.end_time}",
-        description=req.description,
-        event_id=event_id
-    )
-    db.add(cal)
-
-    # FR-EVENT-006: Auto-generate announcement
-    ann = models.Announcement(
-        id=f"AN{uuid.uuid4().hex[:4].upper()}",
-        title=req.title,
-        content=f"{req.description}\n\nVenue: {req.venue}\nTime: {req.start_time} - {req.end_time}",
-        publisher_name=req.council,
-        publisher_role="Council",
-        date=req.date,
-        audience="College",
-        type="Events",
-        event_id=event_id,
-    )
-    db.add(ann)
-
+    if ev.is_published:
+        _publish_event_side_effects(db, ev)
     db.commit()
-    return {"message": "Event published with automatic calendar entry and announcement", "eventId": event_id}
+    return {
+        "message": "Event published with automatic calendar entry and announcement" if ev.is_published
+        else "Draft saved; students cannot see it until you publish",
+        "eventId": event_id,
+    }
 
 def _own_event(event_id: str, user: models.User, db: Session) -> models.CouncilEvent:
     """FR-EVENT-009: a Council Head may only change events they created."""
@@ -2660,6 +2843,22 @@ def update_event(
     db.add(models.AuditLog(user_id=user.id, action="EVENT_UPDATED", resource="CouncilEvent", details=event_id))
     db.commit()
     return {"message": "Event updated; calendar entry and announcement synchronised", "eventId": event_id}
+
+
+@app.post("/api/events/{event_id}/publish")
+def publish_event(
+    event_id: str,
+    user: models.User = Depends(require_role("council")),
+    db: Session = Depends(get_db),
+):
+    ev = _own_event(event_id, user, db)
+    if ev.is_published is not False:
+        raise HTTPException(status_code=409, detail="Event is already published")
+    ev.is_published = True
+    _publish_event_side_effects(db, ev)
+    db.add(models.AuditLog(user_id=user.id, action="EVENT_PUBLISHED", resource="CouncilEvent", details=event_id))
+    db.commit()
+    return {"message": "Event published with automatic calendar entry and announcement", "eventId": event_id}
 
 
 @app.delete("/api/events/{event_id}")

@@ -158,6 +158,11 @@ export const api = {
     return data;
   },
 
+  forgotPassword: (userId: string) =>
+    request<{ message: string }>('/auth/forgot-password', {
+      method: 'POST', authenticated: false, body: JSON.stringify({ user_id: userId }),
+    }),
+
   async firstLogin(newPass: string, confirmPass: string) {
     const data = await request<{ token: string; user: User }>('/auth/first-login', {
       method: 'POST',
@@ -258,6 +263,9 @@ export const api = {
     request<any>('/lectures/create', { method: 'POST', body: JSON.stringify(lectureData) }),
 
   getLectures: () => request<any[]>('/lectures'),
+  getFacultyList: () => request<{ id: string; name: string }[]>('/faculty'),
+  cancelLecture: (lectureId: number, reason?: string) =>
+    request<any>(`/lectures/${lectureId}/cancel`, { method: 'POST', body: JSON.stringify({ reason: reason || null }) }),
   getLectureRoster: (lectureId: number) => request<any>(`/lectures/${lectureId}/roster`),
 
   markAttendance: (lectureId: number, attendance: { student_id: string; status: string }[]) =>
@@ -279,6 +287,28 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ submission_text: submissionText, submission_file: submissionFile || null }),
     }),
+
+  submitAssignmentFile: (assignmentId: string, file: File, text = '') => {
+    const form = new FormData();
+    form.append('file', file);
+    form.append('submission_text', text);
+    return request<any>(`/assignments/${assignmentId}/submit-file`, { method: 'POST', body: form });
+  },
+  async downloadSubmissionFile(submissionId: number, filename: string) {
+    const token = getToken();
+    if (!token) throw new Error('Your session has expired. Please sign in again.');
+    const response = await fetch(`${API_BASE}/assignments/submissions/${submissionId}/file`, {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (!response.ok) {
+      let detail = '';
+      try { detail = (await response.json()).detail; } catch { /* fallback below */ }
+      throw new Error(detail || `Download failed (${response.status}).`);
+    }
+    const url = URL.createObjectURL(await response.blob());
+    const link = document.createElement('a'); link.href = url; link.download = filename; link.click();
+    URL.revokeObjectURL(url);
+  },
 
   gradeSubmission: (submissionId: number, marks: number, feedback: string) =>
     request<any>(`/assignments/submissions/${submissionId}/grade`, {
@@ -348,6 +378,10 @@ export const api = {
     request<any>(`/admin/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
   adminResetPassword: (id: string) =>
     request<any>(`/admin/users/${encodeURIComponent(id)}/reset-password`, { method: 'POST' }),
+  adminResetRequests: () => request<any[]>('/admin/reset-requests'),
+  adminTimetable: (classId?: string) => request<any[]>(`/admin/timetable${classId ? `?class_id=${encodeURIComponent(classId)}` : ''}`),
+  adminAddTimetable: (data: any) => request<any>('/admin/timetable', { method: 'POST', body: JSON.stringify(data) }),
+  adminDeleteTimetable: (id: number) => request<any>(`/admin/timetable/${id}`, { method: 'DELETE' }),
   adminListClasses: () => request<any[]>('/admin/classes'),
   adminSaveClass: (data: any) => request<any>('/admin/classes', { method: 'PUT', body: JSON.stringify(data) }),
   adminListCourses: () => request<any[]>('/admin/courses'),
@@ -359,6 +393,7 @@ export const api = {
   // ── Council events / quiz authoring ───────────────────────────
   updateEvent: (id: string, data: any) =>
     request<any>(`/events/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+  publishEvent: (id: string) => request<any>(`/events/${encodeURIComponent(id)}/publish`, { method: 'POST' }),
   deleteEvent: (id: string) => request<any>(`/events/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   createQuiz: (data: any) => request<any>('/quizzes', { method: 'POST', body: JSON.stringify(data) }),
   setQuizRelease: (id: string, isReleased: boolean) =>
