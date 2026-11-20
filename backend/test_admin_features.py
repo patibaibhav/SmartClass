@@ -379,3 +379,50 @@ def test_faculty_attendance_summary_counts_match_roster():
     assert summary["stats"]["defaulters"] == len(roster) - 1
     assert summary["stats"]["avgAttendance"] == round(100 / len(roster), 1)
     assert all(d["percentage"] == 0.0 for d in summary["defaulters"])
+
+
+def test_uploads_work_with_foreign_keys_enforced_like_postgres(monkeypatch):
+    """SQLite ignores foreign keys by default, which hid an insert-order bug that PostgreSQL rejected."""
+    import main as main_module
+    from test_backend import test_engine
+    from storage import StoredObject
+
+    class FakeStorage:
+        objects: dict = {}
+
+        def create_key(self, *, course_id, filename):
+            return f"materials/{course_id}/k-{filename}"
+
+        def upload(self, *, key, content, content_type):
+            self.objects[key] = (content, content_type)
+
+        def download(self, key):
+            content, content_type = self.objects[key]
+            return StoredObject(key=key, content=content, content_type=content_type)
+
+        def delete(self, key):
+            self.objects.pop(key, None)
+
+    fake = FakeStorage()
+    monkeypatch.setattr(main_module, "get_storage", lambda: fake)
+    with test_engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys=ON")
+    try:
+        faculty = auth(login("FAC-SM"))
+        upload = client.post(
+            "/api/materials/upload", headers=faculty,
+            data={"course_id": "TCS", "unit": "Unit 1", "title": "Notes", "description": ""},
+            files={"file": ("notes.pdf", b"%PDF-1", "application/pdf")})
+        assert upload.status_code == 201, upload.text
+        assert fake.objects  # file kept because the database rows saved
+        created = client.post("/api/assignments", headers=faculty, json={
+            "class_id": "D12A", "course_id": "TCS", "title": "FK", "description": "x",
+            "due_date": "2099-01-01", "marks": 5, "allow_late": True})
+        assert created.status_code in {200, 201}, created.text
+        assignment_id = [a for a in client.get("/api/assignments", headers=faculty).json() if a["title"] == "FK"][0]["id"]
+        file_submit = client.post(f"/api/assignments/{assignment_id}/submit-file", headers=auth(login("STU-D12A-001")),
+                                  files={"file": ("a.pdf", b"%PDF-1", "application/pdf")})
+        assert file_submit.status_code == 200, file_submit.text
+    finally:
+        with test_engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA foreign_keys=OFF")

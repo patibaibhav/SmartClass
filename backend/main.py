@@ -1496,6 +1496,7 @@ async def upload_study_material(
     )
     try:
         db.add(material)
+        db.flush()  # parent row first: PostgreSQL enforces the stored_files -> study_materials foreign key
         db.add(stored_file)
         db.commit()
     except Exception:
