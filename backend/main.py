@@ -186,6 +186,20 @@ def quiz_class_ids(db: Session, quiz: models.Quiz) -> set[str]:
     return set(cache[key])
 
 
+def preload_quiz_classes(db: Session, quizzes: list) -> None:
+    """Fill the request cache for many quizzes with one query instead of one each."""
+    if not quizzes:
+        return
+    cache = _request_cache(db)
+    by_quiz: dict[str, set[str]] = {quiz.id: ({quiz.class_id} if quiz.class_id else set()) for quiz in quizzes}
+    for quiz_id, class_id in db.query(
+        models.QuizClassMembership.quiz_id, models.QuizClassMembership.class_id
+    ).filter(models.QuizClassMembership.quiz_id.in_(list(by_quiz))):
+        by_quiz[quiz_id].add(class_id)
+    for quiz_id, class_ids in by_quiz.items():
+        cache[("quiz_classes", quiz_id)] = class_ids
+
+
 def student_can_access_quiz(db: Session, user: models.User, quiz: models.Quiz) -> bool:
     return bool(user.class_id in quiz_class_ids(db, quiz) and student_is_eligible_for_course(db, user, quiz.course_id))
 
@@ -1722,6 +1736,7 @@ def list_quizzes(
     if user.role == "student":
         query = query.filter(models.Quiz.is_released == True)
     quizzes = query.all()
+    preload_quiz_classes(db, quizzes)
     if user.role == "student":
         quizzes = [quiz for quiz in quizzes if student_can_access_quiz(db, user, quiz)]
     elif user.role == "faculty":

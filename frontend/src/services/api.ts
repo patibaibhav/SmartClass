@@ -44,6 +44,20 @@ function replaceToken(token: string) {
 }
 
 const GET_CACHE_TTL_MS = 20_000;
+
+// Number of GET requests currently in flight. Lets shared UI (EmptyState)
+// show "Loading…" instead of a misleading "nothing here" while data is on its way.
+let pendingGets = 0;
+const pendingListeners = new Set<() => void>();
+function bumpPending(delta: number) {
+  pendingGets += delta;
+  pendingListeners.forEach(listener => listener());
+}
+export function subscribePending(listener: () => void) {
+  pendingListeners.add(listener);
+  return () => { pendingListeners.delete(listener); };
+}
+export const getPendingCount = () => pendingGets;
 const getCache = new Map<string, { at: number; data: unknown }>();
 const inflight = new Map<string, Promise<unknown>>();
 
@@ -108,14 +122,29 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   if (hit && Date.now() - hit.at < GET_CACHE_TTL_MS) return hit.data as T;
   const pending = inflight.get(key);
   if (pending) return pending as Promise<T>;
+  bumpPending(1);
   const promise = rawRequest<T>(path, options)
     .then((data) => {
       getCache.set(key, { at: Date.now(), data });
       return data;
     })
-    .finally(() => inflight.delete(key));
+    .finally(() => { inflight.delete(key); bumpPending(-1); });
   inflight.set(key, promise);
   return promise;
+}
+
+/** Warm the cache for the screens a user is most likely to open next. */
+export function prefetchForRole(role: string) {
+  const common = ['/announcements', '/notifications', '/calendar'];
+  const byRole: Record<string, string[]> = {
+    student: [`/dashboard/stats?role=student`, '/timetable', '/assignments', '/quizzes', '/attendance/student', '/results', '/materials'],
+    faculty: [`/dashboard/stats?role=faculty`, '/timetable', '/assignments', '/quizzes', '/attendance/faculty', '/lectures'],
+    admin: [`/dashboard/stats?role=admin`],
+    council: ['/events'],
+  };
+  [...(byRole[role] || []), ...common].forEach((path, index) => {
+    setTimeout(() => { request<any>(path).catch(() => undefined); }, index * 60);
+  });
 }
 
 export const api = {

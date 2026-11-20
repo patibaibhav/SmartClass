@@ -21,7 +21,7 @@ import ProfilePage from './pages/ProfilePage';
 import NotificationsPage from './pages/NotificationsPage';
 import MyClassPage from './pages/MyClassPage';
 import type { User } from './types';
-import { api } from './services/api';
+import { api, prefetchForRole } from './services/api';
 
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
@@ -41,6 +41,7 @@ export default function App() {
       setNotificationCount(0);
       return;
     }
+    prefetchForRole(user.role);
     api.getNotifications()
       .then(items => setNotificationCount(items.filter(item => !item.read).length))
       .catch(() => setNotificationCount(0));

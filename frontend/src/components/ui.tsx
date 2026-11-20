@@ -1,4 +1,5 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useSyncExternalStore } from 'react';
+import { subscribePending, getPendingCount } from '../services/api';
 
 // ─── Badge ──────────────────────────────────────────────────────────
 type BadgeVariant = 'present' | 'absent' | 'regular' | 'substitute' | 'extra' | 'cancelled'
@@ -228,6 +229,19 @@ export function SectionHeader({ title, sub, action }: { title: string; sub?: str
 
 // ─── Empty State ─────────────────────────────────────────────────────
 export function EmptyState({ icon: Icon, message, sub }: { icon?: React.ElementType; message: string; sub?: string }) {
+  // While any request is in flight (or just about to start), show a loading
+  // placeholder rather than claiming there is nothing to show.
+  const pending = useSyncExternalStore(subscribePending, getPendingCount);
+  const [armed, setArmed] = useState(false);
+  useEffect(() => { const t = setTimeout(() => setArmed(true), 0); return () => clearTimeout(t); }, []);
+  if (pending > 0 || !armed) {
+    return (
+      <div className="flex flex-col items-center justify-center py-16 text-center" role="status" aria-live="polite">
+        <div className="w-10 h-10 rounded-full border-4 border-[#E8E2D0] border-t-[#2F4F3A] animate-spin mb-4" />
+        <p className="text-sm font-semibold text-[#7a6a55]">Loading…</p>
+      </div>
+    );
+  }
   return (
     <div className="flex flex-col items-center justify-center py-16 text-center">
       {Icon && <div className="w-14 h-14 rounded-2xl bg-[#E8E2D0] flex items-center justify-center mb-4"><Icon size={28} className="text-[#7a6a55]" /></div>}
