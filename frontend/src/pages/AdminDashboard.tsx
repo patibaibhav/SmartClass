@@ -2,13 +2,14 @@ import React, { useEffect, useState } from 'react';
 import { Users, BookOpen, Building2, AlertCircle, Calendar } from 'lucide-react';
 import { Card, MetricCard, SectionHeader } from '../components/ui';
 import { api } from '../services/api';
+import AdminManagement from './AdminManagement';
 
 interface Props { onNavigate: (page: string) => void; currentPage?: string; isHOD?: boolean }
 export default function AdminDashboard({ onNavigate, currentPage = 'dashboard', isHOD = false }: Props) {
   const [stats, setStats] = useState<any>(null); const [error, setError] = useState('');
-  useEffect(() => { api.getDashboardStats(isHOD ? 'hod' : 'admin').then(setStats).catch(e => setError(e.message)); }, [isHOD]);
-  if (isHOD && currentPage === 'admin-analytics') {
-    return <div className="p-6 max-w-7xl mx-auto space-y-6"><SectionHeader title="Department Analytics" sub="Computer Engineering · shared academic records"/>
+  useEffect(() => { api.getDashboardStats(isHOD ? 'hod' : currentPage === 'admin-analytics' ? 'analytics' : 'admin').then(setStats).catch(e => setError(e.message)); }, [isHOD, currentPage]);
+  if (currentPage === 'admin-analytics') {
+    return <div className="p-6 max-w-7xl mx-auto space-y-6"><SectionHeader title="Department Analytics" sub={`Computer Engineering · shared academic records${isHOD ? "" : " · administrator view"}`}/>
       {error && <Card className="p-4 text-[#b04040]">{error}</Card>}
       {stats && <>
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-4"><MetricCard label="Students" value={stats.totalStudents} icon={Users}/><MetricCard label="Faculty" value={stats.totalFaculty} icon={Users}/><MetricCard label="Classes" value={stats.totalClasses} icon={BookOpen}/><MetricCard label="Attendance" value={`${stats.departmentAttendance}%`} icon={Calendar}/><MetricCard label="Defaulters" value={stats.defaulters} icon={AlertCircle} color="#b04040"/></div>
@@ -21,10 +22,9 @@ export default function AdminDashboard({ onNavigate, currentPage = 'dashboard', 
       {!stats && !error && <Card className="p-6">Loading department analytics…</Card>}
     </div>;
   }
-  if (currentPage !== 'dashboard') {
-    const labels: Record<string,string> = { 'admin-users': 'User Management', 'admin-classes': 'Class and Course Management', 'admin-analytics': 'Administrative Analytics' };
-    return <div className="p-6 max-w-5xl mx-auto space-y-5"><SectionHeader title={labels[currentPage] || 'Administration'} sub="Administrative overview"/><Card className="p-6"><p className="font-semibold">This write workflow is not exposed in the production API yet.</p><p className="text-sm text-[#7a6a55] mt-2">Use the validated, idempotent import process for accounts and academic structure. The UI does not simulate create, edit, deactivate, or analytics actions.</p></Card></div>;
-  }
+  if (currentPage === 'admin-users') return <AdminManagement initialTab="users" />;
+  if (currentPage === 'admin-classes') return <AdminManagement initialTab="classes" />;
+  if (currentPage !== 'dashboard') return <div className="p-6 max-w-5xl mx-auto"><SectionHeader title="Administration" sub="Use the sidebar to manage users, classes and courses"/></div>;
   return <div className="p-6 max-w-7xl mx-auto space-y-7"><SectionHeader title="Administration" sub="Database-backed institutional counts"/>
     {error && <Card className="p-4 text-[#b04040]">{error}</Card>}
     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

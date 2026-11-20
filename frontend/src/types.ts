@@ -6,6 +6,7 @@ export interface User {
   firstName?: string;
   email?: string | null;
   role: Role;
+  council?: string | null;
   isHOD?: boolean;
   department: string;
   class?: string | null;

@@ -2,6 +2,18 @@
 
 Updated: 2026-10-28
 
+## Update 2026-11-20 (branch `dev6`)
+
+- **Admin role is now real**: `backend/admin_routes.py` adds audited user create/update/deactivate/reset-password, student class reassignment, class/course create/activate, and faculty-class-course assignment. New `AdminManagement` UI replaces the "not exposed" placeholder. Deactivation sets `users.is_active=false` and bumps `token_version` so live sessions die immediately.
+- **Admin + Council accounts** are provisioned by `scripts/provision_admin_council.py` (idempotent; passwords go to a gitignored CSV, never printed). Not yet run against Supabase.
+- **Council events**: edit/delete (`PUT/DELETE /api/events/{id}`), creator-only, synchronising the calendar entry and announcement (new `announcements.event_id`).
+- **Quiz authoring**: `POST /api/quizzes` (assigned faculty only, validated), draft/release toggle, student countdown timer with auto-submit, `QuizAuthor` UI.
+- **Admin analytics**: Admin can read department analytics (`/api/dashboard/stats?role=analytics`); class-wise attendance now uses SQL aggregation instead of loading ~57k rows.
+- **Performance**: gzip responses; frontend GET cache (20 s) with in-flight de-duplication, cleared on writes/logout; backend warm-up ping on page load (helps Render cold starts).
+- Fixed pre-existing runtime bug: `StudyMaterialPage` used `Modal` without importing it (upload dialog would crash).
+- Migration `c41d7e90a1b2` (users.is_active, announcements.event_id). Render's `preDeployCommand` applies it automatically on deploy.
+- Tests: 35 pass (`python -m pytest` in `backend`), `tsc --noEmit` clean, `npm run build` OK. Browser E2E and live Supabase run still not executed.
+
 ## Current phase
 
 Final integration is substantially implemented. Personalized PEC timetables, normalized afternoon/duration handling, complete dashboards, faculty attendance editing, assignment text submission/grading, shared demonstration quizzes, working HOD analytics/grievance handling, and private Supabase-backed study-material upload/download are integrated. Automated API coverage includes secure file authorization tests.

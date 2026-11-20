@@ -21,6 +21,8 @@ class User(Base):
     salt = Column(String(64), nullable=False)
     role = Column(String(20), nullable=False, index=True) # student, faculty, admin, council
     is_hod = Column(Boolean, default=False)
+    council = Column(String(100), nullable=True)  # set for Council Head accounts
+    is_active = Column(Boolean, nullable=False, default=True, server_default="1")
     department = Column(String(100), nullable=False)
     class_id = Column(String(50), nullable=True) # e.g. SE-A
     avatar = Column(String(255), nullable=True)
@@ -417,6 +419,7 @@ class Announcement(Base):
     audience = Column(String(100), nullable=False) # College, Course, Events, Class
     attachment = Column(String(255), nullable=True)
     type = Column(String(50), default="College")
+    event_id = Column(String(50), nullable=True, index=True)
 
 class Notification(Base):
     __tablename__ = "notifications"

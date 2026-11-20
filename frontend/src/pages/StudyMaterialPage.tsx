@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { FileText, ExternalLink, Upload, Download } from 'lucide-react';
-import { Card, Badge, Button, SectionHeader, EmptyState } from '../components/ui';
+import { Card, Badge, Button, SectionHeader, EmptyState, Modal } from '../components/ui';
 import { api } from '../services/api';
 
 interface Props { role?: string }

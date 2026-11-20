@@ -1,0 +1,195 @@
+"""Tests for Admin lifecycle, Council event edit/delete and faculty quiz authoring."""
+from test_backend import (  # noqa: F401  (fixtures + helpers)
+    auth, client, login, seeded_database, TestingSession,
+)
+import models
+
+
+def admin_headers():
+    return auth(login("ADM-001"))
+
+
+def test_admin_routes_forbidden_for_other_roles():
+    for user in ("STU-D12A-001", "FAC-NG", "CON-001"):
+        assert client.get("/api/admin/users", headers=auth(login(user))).status_code == 403
+    assert client.get("/api/admin/users").status_code == 401
+
+
+def test_admin_creates_student_who_must_change_password():
+    response = client.post("/api/admin/users", headers=admin_headers(), json={
+        "role": "student", "name": "Test Student New", "class_id": "D12A", "roll_no": "50"})
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["user"]["id"] == "STU-D12A-050"
+    assert "password_hash" not in body["user"]
+    login_response = client.post("/api/auth/login", json={
+        "user_id": "STU-D12A-050", "password": body["temporaryPassword"]})
+    assert login_response.status_code == 200
+    assert login_response.json()["phase"] == "first-login"
+    # Duplicate roll rejected
+    duplicate = client.post("/api/admin/users", headers=admin_headers(), json={
+        "role": "student", "name": "Dup Student", "class_id": "D12A", "roll_no": "50"})
+    assert duplicate.status_code == 409
+
+
+def test_admin_deactivation_blocks_login_and_invalidates_session():
+    token = login("STU-D12A-002")
+    assert client.get("/api/auth/me", headers=auth(token)).status_code == 200
+    changed = client.patch("/api/admin/users/STU-D12A-002", headers=admin_headers(), json={"is_active": False})
+    assert changed.status_code == 200 and changed.json()["isActive"] is False
+    assert client.get("/api/auth/me", headers=auth(token)).status_code == 401
+    assert client.post("/api/auth/login", json={
+        "user_id": "STU-D12A-002", "password": "SecurePass!123"}).status_code == 401
+    client.patch("/api/admin/users/STU-D12A-002", headers=admin_headers(), json={"is_active": True})
+    assert client.post("/api/auth/login", json={
+        "user_id": "STU-D12A-002", "password": "SecurePass!123"}).status_code == 200
+
+
+def test_admin_cannot_deactivate_self_and_reassigns_student_class():
+    assert client.patch("/api/admin/users/ADM-001", headers=admin_headers(),
+                        json={"is_active": False}).status_code == 400
+    moved = client.patch("/api/admin/users/STU-D12A-001", headers=admin_headers(), json={"class_id": "D12B"})
+    # Roll 1 already exists in D12B, so the move must be refused rather than corrupt rosters.
+    assert moved.status_code == 409
+    moved = client.patch("/api/admin/users/STU-D12A-002", headers=admin_headers(), json={"class_id": "D12B"})
+    assert moved.status_code == 200 and moved.json()["classId"] == "D12B"
+
+
+def test_admin_reset_password_forces_first_login():
+    reset = client.post("/api/admin/users/STU-D12A-001/reset-password", headers=admin_headers())
+    assert reset.status_code == 200
+    again = client.post("/api/auth/login", json={
+        "user_id": "STU-D12A-001", "password": reset.json()["temporaryPassword"]})
+    assert again.json()["phase"] == "first-login"
+
+
+def test_admin_class_course_and_faculty_assignment():
+    headers = admin_headers()
+    assert client.put("/api/admin/classes", headers=headers, json={
+        "id": "D12D", "name": "Computer Engineering - D12D"}).status_code == 200
+    assert client.put("/api/admin/courses", headers=headers, json={
+        "id": "NEW1", "name": "New Course"}).status_code == 200
+    created = client.post("/api/admin/assignments", headers=headers, json={
+        "class_id": "D12D", "course_id": "NEW1", "faculty_id": "FAC-SM"})
+    assert created.status_code == 201
+    assert client.post("/api/admin/assignments", headers=headers, json={
+        "class_id": "D12D", "course_id": "NEW1", "faculty_id": "FAC-SM"}).status_code == 409
+    assert client.post("/api/admin/assignments", headers=headers, json={
+        "class_id": "D12D", "course_id": "NEW1", "faculty_id": "STU-D12A-001"}).status_code == 404
+    # Faculty now sees the new class
+    classes = client.get("/api/academic/classes", headers=auth(login("FAC-SM"))).json()
+    assert "D12D" in {c["id"] for c in classes}
+    assert client.delete(f"/api/admin/assignments/{created.json()['id']}", headers=headers).status_code == 200
+
+
+EVENT = {
+    "title": "Hackathon", "council": "Coding Club", "date": "2026-12-01", "start_time": "10:00",
+    "end_time": "12:00", "venue": "Hall", "description": "Build things", "organizer": "CC",
+    "visibility": "College Wide",
+}
+
+
+def test_council_event_edit_and_delete_sync_calendar_and_announcement():
+    head = auth(login("CON-001"))
+    created = client.post("/api/events", headers=head, json=EVENT)
+    assert created.status_code == 200
+    event_id = created.json()["eventId"]
+    updated = client.put(f"/api/events/{event_id}", headers=head, json={**EVENT, "title": "Hackathon 2", "venue": "Lab"})
+    assert updated.status_code == 200
+    student = auth(login("STU-D12A-001"))
+    assert "Hackathon 2" in {a["title"] for a in client.get("/api/announcements", headers=student).json()}
+    assert "Hackathon 2" in {c["title"] for c in client.get("/api/calendar", headers=student).json()}
+    assert client.delete(f"/api/events/{event_id}", headers=head).status_code == 200
+    assert "Hackathon 2" not in {a["title"] for a in client.get("/api/announcements", headers=student).json()}
+    assert "Hackathon 2" not in {c["title"] for c in client.get("/api/calendar", headers=student).json()}
+    assert client.delete(f"/api/events/{event_id}", headers=head).status_code == 404
+
+
+def test_only_creator_council_head_can_modify_event():
+    db = TestingSession()
+    from test_backend import add_user
+    add_user(db, "CON-002", "council")
+    db.commit(); db.close()
+    event_id = client.post("/api/events", headers=auth(login("CON-001")), json=EVENT).json()["eventId"]
+    other = auth(login("CON-002"))
+    assert client.put(f"/api/events/{event_id}", headers=other, json=EVENT).status_code == 403
+    assert client.delete(f"/api/events/{event_id}", headers=other).status_code == 403
+    assert client.delete(f"/api/events/{event_id}", headers=auth(login("STU-D12A-001"))).status_code == 403
+
+
+QUIZ = {
+    "course_id": "TCS", "class_ids": ["D12A"], "title": "Unit 1 Quiz", "duration_minutes": 10,
+    "opens_at": "2020-01-01T00:00", "closes_at": "2099-01-01T00:00", "max_attempts": 1,
+    "questions": [
+        {"question_text": "Which automaton accepts regular languages?", "options": ["DFA", "PDA", "TM", "LBA"],
+         "correct_option": 0, "marks": 2, "topic": "Automata"},
+        {"question_text": "Halting problem is?", "options": ["Decidable", "Undecidable", "Regular", "Finite"],
+         "correct_option": 1, "marks": 1, "topic": "Computability"},
+    ],
+}
+
+
+def test_faculty_authors_quiz_student_attempts_faculty_sees_result():
+    faculty = auth(login("FAC-SM"))
+    created = client.post("/api/quizzes", headers=faculty, json=QUIZ)
+    assert created.status_code == 201, created.text
+    quiz_id = created.json()["id"]
+    student = auth(login("STU-D12A-001"))
+    listed = [q for q in client.get("/api/quizzes", headers=student).json() if q["id"] == quiz_id]
+    assert listed and listed[0]["canAttempt"] is True and listed[0]["questions"] == 2
+    questions = client.get(f"/api/quizzes/{quiz_id}/questions", headers=student).json()
+    assert all("correct" not in str(q).lower() or "correct_option" not in q for q in questions)
+    answers = {str(q["id"]): 0 for q in questions}
+    submit = client.post(f"/api/quizzes/{quiz_id}/submit", headers=student, json={"answers": answers})
+    assert submit.status_code == 200
+    attempts = client.get(f"/api/quizzes/{quiz_id}/attempts", headers=faculty).json()
+    assert len(attempts) == 1 and attempts[0]["total"] == 3
+    # Other division student cannot see it; second attempt is blocked.
+    other = auth(login("STU-D12B-001"))
+    assert quiz_id not in {q["id"] for q in client.get("/api/quizzes", headers=other).json()}
+    assert client.post(f"/api/quizzes/{quiz_id}/submit", headers=student, json={"answers": answers}).status_code == 409
+
+
+def test_quiz_authoring_authorization_and_validation():
+    assert client.post("/api/quizzes", headers=auth(login("FAC-OTHER")), json=QUIZ).status_code == 403
+    assert client.post("/api/quizzes", headers=auth(login("STU-D12A-001")), json=QUIZ).status_code == 403
+    faculty = auth(login("FAC-SM"))
+    bad = {**QUIZ, "questions": [{**QUIZ["questions"][0], "correct_option": 9}]}
+    assert client.post("/api/quizzes", headers=faculty, json=bad).status_code == 422
+    backwards = {**QUIZ, "opens_at": "2030-01-01T00:00", "closes_at": "2029-01-01T00:00"}
+    assert client.post("/api/quizzes", headers=faculty, json=backwards).status_code == 422
+
+
+def test_draft_quiz_hidden_from_students_until_released():
+    faculty = auth(login("FAC-SM"))
+    quiz_id = client.post("/api/quizzes", headers=faculty, json={**QUIZ, "is_released": False}).json()["id"]
+    student = auth(login("STU-D12A-001"))
+    assert quiz_id not in {q["id"] for q in client.get("/api/quizzes", headers=student).json()}
+    assert quiz_id in {q["id"] for q in client.get("/api/quizzes", headers=faculty).json()}
+    assert client.post(f"/api/quizzes/{quiz_id}/release", headers=faculty, json={"is_released": True}).status_code == 200
+    assert quiz_id in {q["id"] for q in client.get("/api/quizzes", headers=student).json()}
+
+
+def test_admin_can_read_department_analytics_but_not_students():
+    admin = admin_headers()
+    stats = client.get("/api/dashboard/stats?role=analytics", headers=admin)
+    assert stats.status_code == 200 and "classwiseAttendance" in stats.json()
+    assert client.get("/api/dashboard/stats?role=analytics", headers=auth(login("STU-D12A-001"))).status_code == 403
+    assert client.get("/api/dashboard/stats?role=admin", headers=admin).json()["totalClasses"] == 2
+
+
+def test_council_head_is_bound_to_own_council():
+    db = TestingSession()
+    from test_backend import add_user
+    add_user(db, "COU-CSI", "council"); add_user(db, "COU-IEEE", "council"); db.flush()
+    for uid, council in (("COU-CSI", "CSI"), ("COU-IEEE", "IEEE")):
+        db.get(models.User, uid).council = council
+    db.commit(); db.close()
+    csi, ieee = auth(login("COU-CSI")), auth(login("COU-IEEE"))
+    assert client.get("/api/auth/me", headers=csi).json()["council"] == "CSI"
+    # Request claims another council; the server overrides it.
+    ev = client.post("/api/events", headers=csi, json={**EVENT, "council": "IEEE", "visibility": "Council Only"}).json()["eventId"]
+    assert ev in {e["id"] for e in client.get("/api/events", headers=csi).json()}
+    assert ev not in {e["id"] for e in client.get("/api/events", headers=ieee).json()}
+    assert client.get("/api/events", headers=csi).json()[0]["council"] == "CSI"
+    assert client.get("/api/events", headers=auth(login("STU-D12A-001"))).json() == []

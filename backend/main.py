@@ -8,6 +8,7 @@ from typing import Optional, List, Dict, Any
 
 from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.responses import Response
 from sqlalchemy import func, or_, text
@@ -56,6 +57,7 @@ def serialize_user(user: models.User) -> dict[str, Any]:
         "email": user.email,
         "role": user.role,
         "isHOD": user.is_hod,
+        "council": user.council,
         "department": user.department,
         "class": user.class_id,
         "firstLogin": user.first_login,
@@ -204,6 +206,9 @@ app = FastAPI(
 )
 logger = logging.getLogger("smartclass.api")
 
+# Compress JSON responses (lectures/attendance payloads are large and repetitive).
+app.add_middleware(GZipMiddleware, minimum_size=800)
+
 # CORS configuration
 app.add_middleware(
     CORSMiddleware,
@@ -234,6 +239,9 @@ async def add_security_headers(request, call_next):
     )
     return response
 
+from admin_routes import router as admin_router  # noqa: E402
+app.include_router(admin_router)
+
 # -------------------------------------------------------------
 # 1. AUTHENTICATION & ACCESS CONTROL (FR-AUTH-001 to 012)
 # -------------------------------------------------------------
@@ -241,6 +249,12 @@ async def add_security_headers(request, call_next):
 @app.post("/api/auth/login")
 def login(req: schemas.LoginRequest, db: Session = Depends(get_db)):
     user = db.query(models.User).filter(models.User.id == req.user_id).first()
+    if user is not None and user.is_active is False:
+        hash_password(req.password, "0" * 32)
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid User ID or password. Please try again."
+        )
     if not user:
         # Reduce the timing difference between unknown IDs and wrong passwords.
         hash_password(req.password, "0" * 32)
@@ -1707,8 +1721,6 @@ def list_quizzes(
     query = db.query(models.Quiz)
     if user.role == "student":
         query = query.filter(models.Quiz.is_released == True)
-    elif user.role == "faculty":
-        query = query.filter(models.Quiz.is_released == True)
     quizzes = query.all()
     if user.role == "student":
         quizzes = [quiz for quiz in quizzes if student_can_access_quiz(db, user, quiz)]
@@ -1768,6 +1780,81 @@ def list_quizzes(
             "isReleased": q.is_released,
         })
     return results
+
+@app.post("/api/quizzes", status_code=status.HTTP_201_CREATED)
+def author_quiz(
+    req: schemas.QuizAuthorRequest,
+    user: models.User = Depends(require_role("faculty")),
+    db: Session = Depends(get_db),
+):
+    """FR-QUIZ: faculty author a quiz for classes/courses they are assigned to."""
+    course = db.get(models.CourseModel, req.course_id)
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    class_ids = list(dict.fromkeys(req.class_ids))
+    assigned = {
+        row[0] for row in db.query(models.ClassCourse.class_id).filter(
+            models.ClassCourse.faculty_id == user.id,
+            models.ClassCourse.course_id == req.course_id,
+        )
+    }
+    if not assigned or any(cid not in assigned for cid in class_ids):
+        raise HTTPException(status_code=403, detail="You are not assigned to this course for the selected class(es)")
+    try:
+        opens = datetime.fromisoformat(req.opens_at)
+        closes = datetime.fromisoformat(req.closes_at)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Dates must be ISO format, e.g. 2026-11-25T09:00")
+    if closes <= opens:
+        raise HTTPException(status_code=422, detail="Closing time must be after opening time")
+    for index, question in enumerate(req.questions, start=1):
+        if question.correct_option >= len(question.options):
+            raise HTTPException(status_code=422, detail=f"Question {index}: correct option is out of range")
+        if any(not option.strip() for option in question.options):
+            raise HTTPException(status_code=422, detail=f"Question {index}: options cannot be blank")
+    quiz_id = f"QZ{uuid.uuid4().hex[:8].upper()}"
+    topics = sorted({q.topic.strip() or "General" for q in req.questions})
+    quiz = models.Quiz(
+        id=quiz_id, course_id=course.id, course_name=course.name, course_code=course.code,
+        class_id=class_ids[0], title=req.title.strip(), duration_minutes=req.duration_minutes,
+        max_attempts=req.max_attempts, opens_at=req.opens_at, closes_at=req.closes_at,
+        status="upcoming", topics_json=json.dumps(topics), is_released=req.is_released,
+        created_by=user.id, source="faculty",
+    )
+    db.add(quiz)
+    db.flush()
+    for cid in class_ids:
+        db.add(models.QuizClassMembership(quiz_id=quiz_id, class_id=cid))
+    for question in req.questions:
+        db.add(models.QuizQuestion(
+            quiz_id=quiz_id, question_text=question.question_text.strip(),
+            options_json=json.dumps([o.strip() for o in question.options]),
+            correct_option=question.correct_option, marks=question.marks,
+            topic=question.topic.strip() or "General",
+        ))
+    db.add(models.AuditLog(user_id=user.id, action="QUIZ_CREATED", resource="Quiz", details=quiz_id))
+    db.commit()
+    return {"id": quiz_id, "message": "Quiz created", "questions": len(req.questions)}
+
+
+@app.post("/api/quizzes/{quiz_id}/release")
+def set_quiz_release(
+    quiz_id: str,
+    req: schemas.QuizReleaseRequest,
+    user: models.User = Depends(require_role("faculty")),
+    db: Session = Depends(get_db),
+):
+    quiz = db.get(models.Quiz, quiz_id)
+    if not quiz:
+        raise HTTPException(status_code=404, detail="Quiz not found")
+    if not faculty_can_manage_quiz(db, user, quiz):
+        raise HTTPException(status_code=403, detail="Faculty is not assigned to this quiz")
+    quiz.is_released = req.is_released
+    db.add(models.AuditLog(user_id=user.id, action="QUIZ_RELEASE", resource="Quiz",
+                           details=f"{quiz_id} released={req.is_released}"))
+    db.commit()
+    return {"id": quiz_id, "isReleased": quiz.is_released}
+
 
 @app.get("/api/quizzes/{quiz_id}/questions")
 def get_quiz_questions(
@@ -2205,19 +2292,20 @@ def get_dashboard_stats(
     user: models.User = Depends(require_current_user),
     db: Session = Depends(get_db),
 ):
-    if role and role != user.role and not user.is_hod:
+    admin_analytics = user.role == "admin" and role == "analytics"
+    if role and role != user.role and not user.is_hod and not admin_analytics:
         raise HTTPException(status_code=403, detail="Dashboard role does not match the authenticated account")
-    if user.is_hod and role in {"hod", "admin"}:
+    if (user.is_hod and role in {"hod", "admin"}) or admin_analytics:
         students = db.query(models.StudentRecord).all()
-        attendance_rows = db.query(models.Attendance, models.StudentRecord).join(
-            models.StudentRecord, models.StudentRecord.id == models.Attendance.student_id
-        ).all()
         class_counts: dict[str, dict[str, int]] = {}
-        for attendance, student in attendance_rows:
-            bucket = class_counts.setdefault(student.class_id, {"present": 0, "total": 0})
-            bucket["total"] += 1
-            if attendance.status == "Present":
-                bucket["present"] += 1
+        for class_id, att_status, n in db.query(
+            models.StudentRecord.class_id, models.Attendance.status, func.count(models.Attendance.id)
+        ).join(models.StudentRecord, models.StudentRecord.id == models.Attendance.student_id
+        ).group_by(models.StudentRecord.class_id, models.Attendance.status):
+            bucket = class_counts.setdefault(class_id, {"present": 0, "total": 0})
+            bucket["total"] += n
+            if att_status == "Present":
+                bucket["present"] += n
         classwise = [{
             "classId": class_id,
             "students": sum(1 for student in students if student.class_id == class_id),
@@ -2449,7 +2537,12 @@ def list_events(
     db: Session = Depends(get_db),
 ):
     query = db.query(models.CouncilEvent)
-    if user.role not in {"council", "admin"}:
+    if user.role == "council" and user.council:
+        query = query.filter(or_(
+            models.CouncilEvent.visibility == "College Wide",
+            models.CouncilEvent.council == user.council,
+        ))
+    elif user.role not in {"council", "admin"}:
         query = query.filter(models.CouncilEvent.visibility == "College Wide")
     items = query.all()
     return [{
@@ -2472,6 +2565,8 @@ def create_event(
     user: models.User = Depends(require_role("council")),
     db: Session = Depends(get_db),
 ):
+    if user.council:
+        req.council = user.council  # BR-020: heads publish only for their own council
     event_id = f"EV{uuid.uuid4().hex[:4].upper()}"
     ev = models.CouncilEvent(
         id=event_id,
@@ -2509,12 +2604,63 @@ def create_event(
         publisher_role="Council",
         date=req.date,
         audience="College",
-        type="Events"
+        type="Events",
+        event_id=event_id,
     )
     db.add(ann)
 
     db.commit()
     return {"message": "Event published with automatic calendar entry and announcement", "eventId": event_id}
+
+def _own_event(event_id: str, user: models.User, db: Session) -> models.CouncilEvent:
+    """FR-EVENT-009: a Council Head may only change events they created."""
+    ev = db.get(models.CouncilEvent, event_id)
+    if not ev:
+        raise HTTPException(status_code=404, detail="Event not found")
+    if ev.created_by != user.id:
+        raise HTTPException(status_code=403, detail="You can only manage events you created")
+    return ev
+
+
+@app.put("/api/events/{event_id}")
+def update_event(
+    event_id: str,
+    req: schemas.CouncilEventCreateRequest,
+    user: models.User = Depends(require_role("council")),
+    db: Session = Depends(get_db),
+):
+    ev = _own_event(event_id, user, db)
+    if user.council:
+        req.council = user.council
+    ev.title, ev.council, ev.date = req.title, req.council, req.date
+    ev.start_time, ev.end_time, ev.venue = req.start_time, req.end_time, req.venue
+    ev.description, ev.organizer = req.description, req.organizer
+    ev.registration_link, ev.visibility = req.registration_link, req.visibility
+    for cal in db.query(models.CalendarEntry).filter(models.CalendarEntry.event_id == event_id):
+        cal.title, cal.date, cal.description = req.title, req.date, req.description
+        cal.time = f"{req.start_time}–{req.end_time}"
+    for ann in db.query(models.Announcement).filter(models.Announcement.event_id == event_id):
+        ann.title, ann.date, ann.publisher_name = req.title, req.date, req.council
+        ann.content = f"{req.description}\n\nVenue: {req.venue}\nTime: {req.start_time} - {req.end_time}"
+    db.add(models.AuditLog(user_id=user.id, action="EVENT_UPDATED", resource="CouncilEvent", details=event_id))
+    db.commit()
+    return {"message": "Event updated; calendar entry and announcement synchronised", "eventId": event_id}
+
+
+@app.delete("/api/events/{event_id}")
+def delete_event(
+    event_id: str,
+    user: models.User = Depends(require_role("council")),
+    db: Session = Depends(get_db),
+):
+    ev = _own_event(event_id, user, db)
+    db.query(models.CalendarEntry).filter(models.CalendarEntry.event_id == event_id).delete()
+    db.query(models.Announcement).filter(models.Announcement.event_id == event_id).delete()
+    db.add(models.AuditLog(user_id=user.id, action="EVENT_DELETED", resource="CouncilEvent", details=event_id))
+    db.delete(ev)
+    db.commit()
+    return {"message": "Event removed along with its calendar entry and announcement"}
+
 
 # -------------------------------------------------------------
 # 14. DISCUSSION FORUMS (FR-FORUM-001 to 004)

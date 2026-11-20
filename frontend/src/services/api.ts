@@ -27,6 +27,7 @@ function getToken() {
 }
 
 function clearToken() {
+  getCache.clear();
   sessionStorage.removeItem('smartclass_token');
   localStorage.removeItem('smartclass_token');
 }
@@ -42,7 +43,22 @@ function replaceToken(token: string) {
   saveToken(token, remembered);
 }
 
-async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+const GET_CACHE_TTL_MS = 20_000;
+const getCache = new Map<string, { at: number; data: unknown }>();
+const inflight = new Map<string, Promise<unknown>>();
+
+/** Drop cached reads. Called after every write and on logout/login. */
+export function clearApiCache() {
+  getCache.clear();
+  inflight.clear();
+}
+
+/** Wake a sleeping backend (e.g. Render free tier) while the user is still on the login screen. */
+export function warmUpBackend() {
+  fetch(`${API_BASE}/health`, { cache: 'no-store' }).catch(() => undefined);
+}
+
+async function rawRequest<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const { authenticated = true, headers, ...fetchOptions } = options;
   const token = getToken();
   if (authenticated && !token) {
@@ -64,9 +80,42 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   }
   if (!response.ok) {
     if (response.status === 401 && authenticated) clearToken();
-    throw new Error(data?.detail || `Request failed (${response.status}).`);
+    throw new Error(formatError(data?.detail) || `Request failed (${response.status}).`);
   }
   return data as T;
+}
+
+function formatError(detail: unknown): string {
+  if (!detail) return '';
+  if (typeof detail === 'string') return detail;
+  if (Array.isArray(detail)) {
+    return detail.map((item: any) => item?.msg || JSON.stringify(item)).join('; ');
+  }
+  return JSON.stringify(detail);
+}
+
+async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
+  const method = (options.method || 'GET').toUpperCase();
+  if (method !== 'GET') {
+    try {
+      return await rawRequest<T>(path, options);
+    } finally {
+      clearApiCache();
+    }
+  }
+  const key = `${getToken()?.slice(-12) ?? 'anon'}:${path}`;
+  const hit = getCache.get(key);
+  if (hit && Date.now() - hit.at < GET_CACHE_TTL_MS) return hit.data as T;
+  const pending = inflight.get(key);
+  if (pending) return pending as Promise<T>;
+  const promise = rawRequest<T>(path, options)
+    .then((data) => {
+      getCache.set(key, { at: Date.now(), data });
+      return data;
+    })
+    .finally(() => inflight.delete(key));
+  inflight.set(key, promise);
+  return promise;
 }
 
 export const api = {
@@ -258,4 +307,33 @@ export const api = {
 
   getDashboardStats: (role: string) =>
     request<any>(`/dashboard/stats?role=${encodeURIComponent(role)}`),
+  // ── Admin lifecycle ───────────────────────────────────────────
+  adminListUsers: (role?: string, q?: string) => {
+    const params = new URLSearchParams();
+    if (role) params.set('role', role);
+    if (q) params.set('q', q);
+    return request<any[]>(`/admin/users?${params}`);
+  },
+  adminCreateUser: (data: any) => request<any>('/admin/users', { method: 'POST', body: JSON.stringify(data) }),
+  adminUpdateUser: (id: string, data: any) =>
+    request<any>(`/admin/users/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) }),
+  adminResetPassword: (id: string) =>
+    request<any>(`/admin/users/${encodeURIComponent(id)}/reset-password`, { method: 'POST' }),
+  adminListClasses: () => request<any[]>('/admin/classes'),
+  adminSaveClass: (data: any) => request<any>('/admin/classes', { method: 'PUT', body: JSON.stringify(data) }),
+  adminListCourses: () => request<any[]>('/admin/courses'),
+  adminSaveCourse: (data: any) => request<any>('/admin/courses', { method: 'PUT', body: JSON.stringify(data) }),
+  adminListAssignments: () => request<any[]>('/admin/assignments'),
+  adminAssign: (data: any) => request<any>('/admin/assignments', { method: 'POST', body: JSON.stringify(data) }),
+  adminUnassign: (id: number) => request<any>(`/admin/assignments/${id}`, { method: 'DELETE' }),
+
+  // ── Council events / quiz authoring ───────────────────────────
+  updateEvent: (id: string, data: any) =>
+    request<any>(`/events/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteEvent: (id: string) => request<any>(`/events/${encodeURIComponent(id)}`, { method: 'DELETE' }),
+  createQuiz: (data: any) => request<any>('/quizzes', { method: 'POST', body: JSON.stringify(data) }),
+  setQuizRelease: (id: string, isReleased: boolean) =>
+    request<any>(`/quizzes/${encodeURIComponent(id)}/release`, {
+      method: 'POST', body: JSON.stringify({ is_released: isReleased }),
+    }),
 };

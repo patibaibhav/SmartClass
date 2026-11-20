@@ -76,13 +76,14 @@ export default function App() {
         if (user!.role === 'student') return <StudentDashboard onNavigate={navigate} userName={user!.firstName || user!.name} />;
         if (user!.role === 'faculty') return <FacultyDashboard onNavigate={navigate} userName={user!.name} isHOD={user!.isHOD} />;
         if (user!.role === 'admin') return <AdminDashboard onNavigate={navigate} currentPage="dashboard" />;
-        if (user!.role === 'council') return <CouncilDashboard onNavigate={navigate} userName={user!.name} currentPage="dashboard" />;
+        if (user!.role === 'council') return <CouncilDashboard onNavigate={navigate} userName={user!.name} council={user!.council} currentPage="dashboard" />;
         return null;
 
       case 'my-class':
         return <MyClassPage role={user!.role} onNavigate={navigate} />;
 
       case 'attendance':
+        if (user!.role === 'admin') return <AdminDashboard onNavigate={navigate} currentPage="admin-analytics" />;
         return <AttendancePage />;
 
       case 'faculty-attendance':
@@ -134,7 +135,7 @@ export default function App() {
         return <AdminDashboard onNavigate={navigate} currentPage="admin-classes" />;
 
       case 'admin-analytics':
-        return <AdminDashboard onNavigate={navigate} currentPage="admin-analytics" isHOD={user!.isHOD} />;
+        return <AdminDashboard onNavigate={navigate} currentPage="admin-analytics" isHOD={user!.isHOD && user!.role === 'faculty'} />;
 
       case 'admin-classrooms':
         return <ClassroomAvailabilityPage />;
@@ -143,10 +144,10 @@ export default function App() {
         return <FacultyAttendancePage />;
 
       case 'council-events':
-        return <CouncilDashboard onNavigate={navigate} userName={user!.name} currentPage="council-events" />;
+        return <CouncilDashboard onNavigate={navigate} userName={user!.name} council={user!.council} currentPage="council-events" />;
 
       case 'council-create-event':
-        return <CouncilDashboard onNavigate={navigate} userName={user!.name} currentPage="council-create-event" />;
+        return <CouncilDashboard onNavigate={navigate} userName={user!.name} council={user!.council} currentPage="council-create-event" />;
 
       case 'extra-lecture':
         return <FacultyAttendancePage />;

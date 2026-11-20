@@ -98,6 +98,30 @@ class QuizCreateRequest(BaseModel):
     max_attempts: int = Field(default=1, ge=1, le=10)
     topics: List[str] = []
 
+class QuizQuestionInput(BaseModel):
+    question_text: str = Field(min_length=3)
+    options: List[str] = Field(min_length=2, max_length=6)
+    correct_option: int = Field(ge=0)
+    marks: int = Field(default=1, ge=1, le=20)
+    topic: str = "General"
+
+
+class QuizAuthorRequest(BaseModel):
+    course_id: str
+    class_ids: List[str] = Field(min_length=1)
+    title: str = Field(min_length=3, max_length=200)
+    duration_minutes: int = Field(ge=1, le=240)
+    opens_at: str
+    closes_at: str
+    max_attempts: int = Field(default=1, ge=1, le=10)
+    is_released: bool = True
+    questions: List[QuizQuestionInput] = Field(min_length=1, max_length=100)
+
+
+class QuizReleaseRequest(BaseModel):
+    is_released: bool
+
+
 class QuizSubmitRequest(BaseModel):
     answers: Dict[str, int] # question_id -> option_index
     is_auto_submitted: bool = False

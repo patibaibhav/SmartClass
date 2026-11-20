@@ -119,7 +119,7 @@ def _resolve_token_user(
     if not row:
         raise HTTPException(status_code=401, detail="User not found")
     user, is_revoked = row
-    if is_revoked:
+    if is_revoked or user.is_active is False:
         raise HTTPException(status_code=401, detail="Token has been invalidated")
     if int(payload.get("ver", -1)) != int(user.token_version or 0):
         raise HTTPException(status_code=401, detail="Token has been invalidated")
