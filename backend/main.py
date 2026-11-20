@@ -10,7 +10,7 @@ from fastapi import FastAPI, Depends, HTTPException, status, Query, Security, Up
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.security import HTTPAuthorizationCredentials
-from fastapi.responses import Response
+from fastapi.responses import JSONResponse, Response
 from sqlalchemy import func, or_, text
 from sqlalchemy.orm import Session
 
@@ -241,7 +241,14 @@ async def add_security_headers(request, call_next):
     except Exception:
         # Do not include headers, bodies, tokens, or connection strings in logs.
         logger.exception("unhandled_request_error method=%s path=%s", request.method, request.url.path)
-        raise
+        # Return a JSON error WITH CORS headers. Without them the browser reports an opaque
+        # "Failed to fetch" instead of a readable message.
+        response = JSONResponse({"detail": "Internal server error. Please try again."}, status_code=500)
+        origin = request.headers.get("origin", "").rstrip("/")
+        if origin in CORS_ORIGINS:
+            response.headers["Access-Control-Allow-Origin"] = origin
+            response.headers["Access-Control-Allow-Credentials"] = "true"
+            response.headers["Vary"] = "Origin"
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
     response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
@@ -653,9 +660,14 @@ def get_faculty_attendance(
     assignments = assignments_query.all()
     defaulters = []
     percentages = []
+    course_by_id = {
+        c.id: c for c in db.query(models.CourseModel).filter(
+            models.CourseModel.id.in_({a.course_id for a in assignments})
+        )
+    } if assignments else {}
     for assignment in assignments:
-        course = db.query(models.CourseModel).filter(models.CourseModel.id == assignment.course_id).first()
-        lectures = db.query(models.Lecture).outerjoin(models.LectureClassMembership).filter(
+        course = course_by_id.get(assignment.course_id)
+        lectures = db.query(models.Lecture.id).outerjoin(models.LectureClassMembership).filter(
             or_(
                 models.Lecture.class_id == assignment.class_id,
                 models.LectureClassMembership.class_id == assignment.class_id,
@@ -665,15 +677,18 @@ def get_faculty_attendance(
         ).distinct().all()
         if not lectures:
             continue
-        lecture_ids = [lecture.id for lecture in lectures]
+        lecture_ids = [row[0] for row in lectures]
         students = eligible_roster(db, {assignment.class_id}, assignment.course_id)
-        for student in students:
-            present = db.query(models.Attendance).filter(
-                models.Attendance.student_id == student.id,
+        # One grouped query for every student instead of one query per student.
+        present_by_student = dict(
+            db.query(models.Attendance.student_id, func.count(models.Attendance.id)).filter(
                 models.Attendance.lecture_id.in_(lecture_ids),
                 models.Attendance.status == "Present",
-            ).count()
-            percentage = round(present / len(lectures) * 100, 1)
+                models.Attendance.student_id.in_([student.id for student in students]),
+            ).group_by(models.Attendance.student_id).all()
+        ) if students else {}
+        for student in students:
+            percentage = round(present_by_student.get(student.id, 0) / len(lecture_ids) * 100, 1)
             percentages.append(percentage)
             if percentage < DEFAULT_LOW_ATTENDANCE_THRESHOLD:
                 defaulters.append({

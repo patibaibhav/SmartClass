@@ -327,3 +327,55 @@ def test_admin_timetable_create_conflicts_and_delete():
     assert len(listed) == 2 and all(r["createdByAdmin"] for r in listed)
     assert client.delete(f"/api/admin/timetable/{created.json()['id']}", headers=admin).status_code == 200
     assert client.delete(f"/api/admin/timetable/{created.json()['id']}", headers=admin).status_code == 404
+
+
+def test_storage_network_failure_becomes_clean_503_and_crash_keeps_cors(monkeypatch):
+    import httpx
+    import main as main_module
+    from storage import SupabaseStorage
+
+    storage = SupabaseStorage(url="https://example.invalid", key="k", bucket="b")
+
+    def boom(*args, **kwargs):
+        raise httpx.ConnectError("no route")
+
+    monkeypatch.setattr(httpx, "request", boom)
+    monkeypatch.setattr(main_module, "get_storage", lambda: storage)
+    headers = {**auth(login("FAC-SM")), "Origin": "http://localhost:5173"}
+    upload = client.post(
+        "/api/materials/upload", headers=headers,
+        data={"course_id": "TCS", "unit": "U1", "title": "T", "description": ""},
+        files={"file": ("n.pdf", b"%PDF-x", "application/pdf")},
+    )
+    assert upload.status_code == 503
+    assert "unreachable" in upload.json()["detail"]
+    assert upload.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+    # A genuinely unexpected crash still returns JSON with CORS headers (not an opaque network error).
+    def crash():
+        raise RuntimeError("unexpected")
+
+    monkeypatch.setattr(main_module, "get_storage", crash)
+    crashed = client.post(
+        "/api/materials/upload", headers=headers,
+        data={"course_id": "TCS", "unit": "U1", "title": "T", "description": ""},
+        files={"file": ("n.pdf", b"%PDF-x", "application/pdf")},
+    )
+    assert crashed.status_code == 500
+    assert crashed.json()["detail"].startswith("Internal server error")
+    assert crashed.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+def test_faculty_attendance_summary_counts_match_roster():
+    """Bulk attendance counting must agree with per-lecture marks."""
+    fac = auth(login("FAC-SM"))
+    lecture_id = client.post("/api/lectures/create", headers=fac, json={
+        "class_id": "D12A", "course_id": "TCS", "date": "2026-12-03", "start_time": "10:00",
+        "end_time": "11:00", "classroom": "314", "lecture_type": "Extra", "actual_faculty_id": "FAC-SM"}).json()["lectureId"]
+    roster = client.get(f"/api/lectures/{lecture_id}/roster", headers=fac).json()["students"]
+    marks = [{"student_id": s["id"], "status": "Present" if i == 0 else "Absent"} for i, s in enumerate(roster)]
+    assert client.post("/api/attendance/mark", headers=fac, json={"lecture_id": lecture_id, "attendance": marks}).status_code == 200
+    summary = client.get("/api/attendance/faculty", headers=fac).json()
+    assert summary["stats"]["defaulters"] == len(roster) - 1
+    assert summary["stats"]["avgAttendance"] == round(100 / len(roster), 1)
+    assert all(d["percentage"] == 0.0 for d in summary["defaulters"])

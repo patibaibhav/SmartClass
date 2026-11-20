@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 import uuid
 from dataclasses import dataclass
@@ -16,6 +17,9 @@ from config import (
     SUPABASE_STORAGE_BUCKET,
     SUPABASE_URL,
 )
+
+
+logger = logging.getLogger("smartclass.storage")
 
 
 class StorageError(RuntimeError):
@@ -73,21 +77,36 @@ class SupabaseStorage:
         course = re.sub(r"[^A-Za-z0-9_-]", "", course_id) or "course"
         return f"materials/{course}/{uuid.uuid4().hex}{extension}"
 
+    def _call(self, method: str, url: str, **kwargs) -> httpx.Response:
+        try:
+            return httpx.request(method, url, timeout=30, **kwargs)
+        except httpx.HTTPError as exc:  # timeouts, DNS, TLS, illegal header values...
+            logger.warning("storage_network_error type=%s", type(exc).__name__)
+            raise StorageError("Storage service is unreachable; please try again") from exc
+
     def upload(self, *, key: str, content: bytes, content_type: str) -> None:
-        response = httpx.post(
+        response = self._call(
+            "POST",
             f"{self.url}/storage/v1/object/{self.bucket}/{key}",
             headers={**self.headers, "Content-Type": content_type, "x-upsert": "false"},
             content=content,
-            timeout=30,
         )
         if response.status_code not in {200, 201}:
-            raise StorageError("Storage upload failed; please try again")
+            # Log provider status/message (never the key) so misconfiguration is diagnosable.
+            logger.warning("storage_upload_rejected status=%s body=%s", response.status_code, response.text[:200])
+            hint = {
+                400: "check the bucket name",
+                401: "the storage key was rejected",
+                403: "the storage key was rejected",
+                404: "the storage bucket was not found",
+            }.get(response.status_code, "please try again")
+            raise StorageError(f"Storage upload failed ({hint})")
 
     def download(self, key: str) -> StoredObject:
-        response = httpx.get(
+        response = self._call(
+            "GET",
             f"{self.url}/storage/v1/object/{self.bucket}/{key}",
             headers=self.headers,
-            timeout=30,
         )
         if response.status_code == 404:
             raise StorageError("The stored file is no longer available")
@@ -97,11 +116,11 @@ class SupabaseStorage:
                             content_type=response.headers.get("content-type", "application/octet-stream"))
 
     def delete(self, key: str) -> None:
-        response = httpx.delete(
+        response = self._call(
+            "DELETE",
             f"{self.url}/storage/v1/object/{self.bucket}",
             headers={**self.headers, "Content-Type": "application/json"},
             json={"prefixes": [key]},
-            timeout=30,
         )
         if response.status_code not in {200, 204}:
             raise StorageError("Storage deletion failed")

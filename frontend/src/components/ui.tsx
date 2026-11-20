@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useSyncExternalStore } from 'react';
+import { createPortal } from 'react-dom';
 import { subscribePending, getPendingCount } from '../services/api';
 
 // ─── Badge ──────────────────────────────────────────────────────────
@@ -200,8 +201,10 @@ export function Toast({ message, type = 'success', onClose }: { message: string;
 
 // ─── Modal ───────────────────────────────────────────────────────────
 export function Modal({ title, children, onClose, width = 'max-w-lg' }: { title: string; children: React.ReactNode; onClose: () => void; width?: string }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4" onClick={onClose}>
+  // Rendered into <body>: page wrappers use a fade-in transform, which would otherwise
+  // make "fixed" position relative to the page and clip the dialog.
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4" onClick={onClose}>
       <div className="absolute inset-0 bg-black/30 backdrop-blur-sm" />
       <div className={`relative bg-[#F5EBD7] rounded-2xl shadow-xl w-full ${width} max-h-[90vh] overflow-y-auto`} onClick={e => e.stopPropagation()}>
         <div className="flex items-center justify-between px-6 py-4 border-b border-[#E8E2D0]">
@@ -210,7 +213,8 @@ export function Modal({ title, children, onClose, width = 'max-w-lg' }: { title:
         </div>
         <div className="px-6 py-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
